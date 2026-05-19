@@ -217,19 +217,27 @@ def ajouter_colonne_url():
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
-    print("\n" + "="*50)
-    print("📦 GESTION DES PRIX (Google Sheets)")
-    print("="*50)
-    print("\n1. Scraper les prix automatiques (marketplaces)")
-    print("2. Afficher le statut des fournisseurs")
-    print("3. Ajouter la colonne URL")
+    import sys
     
-    choix = input("\nChoix (1/2/3): ")
+    print("\n" + "="*50)
+    print("📦 MISE À JOUR AUTOMATIQUE DES PRIX")
+    print("="*50)
+    
+    # Si un argument est passé en ligne de commande
+    if len(sys.argv) > 1:
+        choix = sys.argv[1]
+    else:
+        # Par défaut, on scrape les prix
+        choix = "1"
     
     if choix == "1":
         mettre_a_jour_prix_auto()
     elif choix == "2":
         afficher_statut()
+    elif choix == "3":
+        ajouter_colonne_url()
+    else:
+        print("Choix invalide")
     elif choix == "3":
         ajouter_colonne_url()
     else:
