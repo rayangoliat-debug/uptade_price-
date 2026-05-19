@@ -216,6 +216,7 @@ def ajouter_colonne_url():
         print("✅ Colonne 'URL' existe déjà")
 
 # ==================== LANCER ====================
+# ==================== LANCER ====================
 if __name__ == "__main__":
     import sys
     
@@ -234,10 +235,6 @@ if __name__ == "__main__":
         mettre_a_jour_prix_auto()
     elif choix == "2":
         afficher_statut()
-    elif choix == "3":
-        ajouter_colonne_url()
-    else:
-        print("Choix invalide")
     elif choix == "3":
         ajouter_colonne_url()
     else:
