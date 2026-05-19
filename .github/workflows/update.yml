@@ -1,0 +1,27 @@
+name: Mise à jour des prix
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Tous les dimanches à minuit
+  workflow_dispatch:
+
+jobs:
+  update-prices:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run price updater
+        run: python update_prices.py
+        env:
+          # Optionnel: si tu as besoin de secrets
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
