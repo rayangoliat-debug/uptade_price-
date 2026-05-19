@@ -10,7 +10,7 @@ import json
 
 # ==================== CONFIGURATION ====================
 # ID du Google Sheets (à modifier)
-SHEET_ID = "TON_ID_ICI"  # ← ID du fichier Google Sheets
+SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"  # ← ID du fichier Google Sheets
 
 # Nom de la feuille
 FEUILLE_HISTORIQUE = "HistoriquePrix"
