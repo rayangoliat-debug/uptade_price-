@@ -22,6 +22,6 @@ jobs:
           pip install gspread google-auth requests beautifulsoup4
       
       - name: Run price updater
-        run: python goliat-price.py
+        run: python updater_prices.py
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
