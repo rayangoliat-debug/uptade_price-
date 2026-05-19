@@ -130,48 +130,65 @@ def scraper_amazon(url):
 
 # ==================== COLORATION DES FOURNISSEURS MANUELS ====================
 def colorer_fournisseurs_manuels():
-    """Colore en jaune les fournisseurs à saisie manuelle dans Google Sheets"""
+    """Colore en jaune les fournisseurs à saisie manuelle"""
     
     print("🎨 Coloration des fournisseurs manuels...")
     client = connecter_google_sheets()
     sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
     
-    toutes_les_lignes = sheet.get_all_values()
+    # Récupérer toutes les données
+    data = sheet.get_all_values()
     
-    if not toutes_les_lignes:
-        print("   Aucune donnée trouvée")
+    if len(data) <= 1:
+        print("   ❌ Aucune donnée trouvée")
         return
     
-    # Trouver la colonne Fournisseur
-    entetes = toutes_les_lignes[0]
+    # Trouver la colonne Fournisseur (insensible à la casse)
+    entetes = data[0]
     col_fournisseur = None
     for i, col in enumerate(entetes):
         if col.lower() == "fournisseur":
-            col_fournisseur = i + 1  # 1-indexé pour gspread
+            col_fournisseur = i
+            print(f"   ✅ Colonne 'Fournisseur' trouvée (colonne {i+1})")
             break
     
-    if not col_fournisseur:
+    if col_fournisseur is None:
         print("   ❌ Colonne 'Fournisseur' non trouvée")
+        print(f"   📋 Entêtes disponibles: {entetes}")
         return
     
-    # Couleur jaune
-    yellow_format = {
-        "backgroundColor": {
-            "red": 1.0,
-            "green": 1.0,
-            "blue": 0.6
-        }
-    }
-    
+    # Parcourir les lignes et colorer
     count = 0
-    for row in range(2, len(toutes_les_lignes) + 1):
-        fournisseur = sheet.cell(row, col_fournisseur).value
+    for row_idx in range(1, len(data)):  # row_idx 0 = ligne 1 (entêtes)
+        fournisseur = data[row_idx][col_fournisseur]
+        
         if fournisseur in FOURNISSEURS_MANUELS:
-            sheet.format(f"{chr(64 + col_fournisseur)}{row}", yellow_format)
+            # Colorer la cellule (ligne row_idx+1, colonne col_fournisseur+1)
+            cell_ref = f"{chr(65 + col_fournisseur)}{row_idx + 1}"
+            sheet.format(cell_ref, {
+                "backgroundColor": {
+                    "red": 1.0,
+                    "green": 1.0,
+                    "blue": 0.6
+                }
+            })
             count += 1
             print(f"   🟡 {fournisseur} coloré")
     
-    print(f"✅ {count} fournisseurs colorés en jaune")
+    print(f"\n✅ {count} fournisseurs colorés en jaune")
+    
+    # Afficher les fournisseurs trouvés dans le sheet
+    fournisseurs_trouves = set()
+    for row_idx in range(1, min(len(data), 30)):
+        fournisseurs_trouves.add(data[row_idx][col_fournisseur])
+    
+    print(f"\n📊 Fournisseurs dans le sheet: {sorted(fournisseurs_trouves)}")
+    
+    # Afficher ceux qui ne correspondent pas
+    manquants = [f for f in FOURNISSEURS_MANUELS if f not in fournisseurs_trouves]
+    if manquants:
+        print(f"\n⚠️ Fournisseurs attendus non trouvés: {manquants}")
+        
 
 # ==================== MISE À JOUR GOOGLE SHEETS ====================
 def mettre_a_jour_prix_auto():
