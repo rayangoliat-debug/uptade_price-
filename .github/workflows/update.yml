@@ -21,7 +21,7 @@ jobs:
         run: pip install -r requirements.txt
       
       - name: Run price updater
-        run: python update_prices.py
+        run: python update_price.py
         env:
           # Optionnel: si tu as besoin de secrets
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
