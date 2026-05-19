@@ -147,7 +147,7 @@ def colorer_fournisseurs_manuels():
     col_fournisseur = None
     for i, col in enumerate(entetes):
         if col.lower() == "fournisseur":
-            col_fournisseur = i + 1
+            col_fournisseur = i + 1  # 1-indexé pour gspread
             break
     
     if not col_fournisseur:
