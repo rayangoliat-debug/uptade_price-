@@ -1,8 +1,10 @@
-name: Mise à jour des prix
+name: Mise à jour des prix containers
 
 on:
   schedule:
-    - cron: '0 0 * * 0'
+    # Tous les dimanches à 8h00
+    - cron: '0 10 * * 1,4'
+  # Permet une exécution manuelle depuis l'interface GitHub
   workflow_dispatch:
 
 jobs:
@@ -10,7 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
       
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -18,9 +21,19 @@ jobs:
           python-version: '3.10'
       
       - name: Install dependencies
-        run: pip install gspread google-auth requests beautifulsoup4
+        run: |
+          pip install requests beautifulsoup4 gspread google-auth
       
-      - name: Run scraper
+      - name: Run price scraper
         run: python updater_prices.py
         env:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      
+      - name: Upload logs (if error)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs
+          path: |
+            *.log
+            *.txt
