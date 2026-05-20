@@ -10,7 +10,7 @@ import time
 
 # ==================== CONFIGURATION ====================
 # 🔧 REMPLACE PAR L'ID DE TON GOOGLE SHEETS 🔧
-SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"
+SHEET_ID = "1XBidRt-lJX9zXD3ZCCWZ-A1xKiW9NVrM5sVRPM5wce4"  # ← Ton ID
 
 # Nom de la feuille cible
 FEUILLE_HISTORIQUE = "HistoriquePrix"
@@ -221,13 +221,19 @@ def mettre_a_jour_prix():
         else:
             print(f"   ⚠️ Aucun produit trouvé")
     
-    # Ajouter les nouvelles lignes
+    # Ajouter les nouvelles lignes AVEC PAUSE pour éviter l'erreur 429
     if nouvelles_lignes:
         print(f"\n📝 Ajout de {len(nouvelles_lignes)} lignes...")
-        for ligne in nouvelles_lignes:
-            sheet.append_row(ligne, value_input_option='USER_ENTERED')
+        for i, ligne in enumerate(nouvelles_lignes):
+            try:
+                sheet.append_row(ligne, value_input_option='USER_ENTERED')
+                if (i + 1) % 10 == 0:
+                    print(f"   {i + 1}/{len(nouvelles_lignes)} lignes ajoutées...")
+                time.sleep(0.5)  # Pause de 0.5 seconde pour éviter le quota
+            except Exception as e:
+                print(f"   ⚠️ Erreur ligne {i+1}: {e}")
         
-        print(f"✅ {len(nouvelles_lignes)} lignes ajoutées")
+        print(f"\n✅ {len(nouvelles_lignes)} lignes ajoutées")
         colorer_fournisseurs_manuels(sheet)
     else:
         print("⚠️ Aucune donnée ajoutée")
