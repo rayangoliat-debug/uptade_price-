@@ -1,63 +1,79 @@
-import gspread
-from google.oauth2.service_account import Credentials
+import requests
 from bs4 import BeautifulSoup
 import re
-import requests
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime
 import os
 import json
+import time
 
 # ==================== CONFIGURATION ====================
-# 🔧 REMPLACE CET ID PAR LE TIEN 🔧
-SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1YY" 
-# Nom de la feuille à mettre à jour
+# 🔧 REMPLACE PAR L'ID DE TON GOOGLE SHEETS 🔧
+SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"
+
+# Nom de la feuille cible
 FEUILLE_HISTORIQUE = "HistoriquePrix"
 
-# Sites à scraper
-SITES_A_SCRAPER = {
+# Configuration des sites à scraper
+SITES_CONFIG = {
     "Box'Innov": {
-        "url": "https://www.boxinnov.com/conteneurs-maritimes/conteneur-6-pieds-dry/",
-        "type": "unitaire",
-        "selecteur_prix": ".price, .product-price",
-        "selecteur_nom": "h1, .product-title",
-        "region": "all",
-        "source": "fournisseur_direct"
-    },
-    "CFC": {
-        "url": "https://compagnie-francaise-du-conteneur.fr/produits/20-pieds-dry",
-        "type": "generique",
-        "motif_prix": r"(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]\s?TTC",
-        "selecteur_nom": "h1, .product-title",
-        "region": "all",
+        "urls": ["https://www.boxinnov.com/conteneur-maritime/"],
+        "regions": ["Lyon", "Nantes", "Marseille"],
+        "type": "rubrique",
+        "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
+        "nom_selector": ["h2", "h3", ".product-title"],
         "source": "fournisseur_direct"
     },
     "Eurobox": {
-        "url": "https://eurobox.fr/categorie-produit/containers/containers-maritime/",
-        "type": "generique",
-        "motif_prix": r"(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]\s?HT",
-        "selecteur_nom": "h2, h3, .product-title",
-        "region": "all",
-        "source": "fournisseur_direct"
-    },
-    "MouvBox": {
-        "url": "https://mouvbox-france.com/categorie-produit/containers/les-standards/",
-        "type": "generique",
-        "motif_prix": r"(?:dès|à partir de)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]",
-        "selecteur_nom": "h2, h3, .product-title",
-        "region": "all",
+        "urls": [
+            "https://eurobox.fr/categorie-produit/containers/containers-maritime/",
+            "https://eurobox.fr/categorie-produit/containers/containers-maritime/page/2/"
+        ],
+        "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
+        "type": "rubrique",
+        "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
+        "nom_selector": ["h2", "h3", ".product-title", "span"],
         "source": "fournisseur_direct"
     },
     "Cubner": {
-        "url": "https://cubner.com/categorie-produit/conteneur-dry/",
-        "type": "generique",
-        "motif_prix": r"(?:à partir de|dès)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]",
-        "selecteur_nom": "h2, h3, .product-title",
-        "region": "all",
+        "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
+        "regions": ["Paris", "Lyon"],
+        "type": "rubrique",
+        "prix_pattern": r'(?:à partir de|dès)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
+        "nom_selector": ["h2", "h3", ".product-title", ".title"],
+        "source": "fournisseur_direct"
+    },
+    "MouvBox": {
+        "urls": ["https://mouvbox-france.com/categorie-produit/containers/les-standards/"],
+        "regions": ["Toulouse", "Perpignan"],
+        "type": "rubrique",
+        "prix_pattern": r'(?:dès|à partir de)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
+        "nom_selector": ["h2", "h3", ".product-title"],
+        "source": "fournisseur_direct"
+    },
+    "CFC": {
+        "urls": ["https://compagnie-francaise-du-conteneur.fr/collections/standards"],
+        "regions": ["Marseille", "Lyon", "Lille"],
+        "type": "rubrique",
+        "prix_pattern": r'À partir de\s*(\d{1,3}(?:[\s]?\d{3})?)[\s,]?(\d{2})?\s?[€&euro;]\s?TTC',
+        "nom_selector": ["h2", "h3", ".product-title"],
+        "source": "fournisseur_direct"
+    },
+    "ACM Container": {
+        "urls": [
+            "https://acm-container.fr/conteneurs-maritimes/neuf/",
+            "https://acm-container.fr/conteneurs-maritimes/occasion/"
+        ],
+        "regions": ["Marseille"],
+        "type": "rubrique",
+        "prix_pattern": r'(?:à partir de|À partir de)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
+        "nom_selector": ["h2", "h3", ".product-title"],
         "source": "fournisseur_direct"
     }
 }
 
-# Fournisseurs à colorer en jaune (saisie manuelle)
+# Fournisseurs manuels (colorés en jaune)
 FOURNISSEURS_MANUELS = [
     "Nord Container", "2M Containers", "Easy Container", "BBox Container",
     "Méditerranée Containers", "ABC Container", "Est Container", "Ouest Container",
@@ -67,87 +83,64 @@ FOURNISSEURS_MANUELS = [
 
 # ==================== CONNEXION GOOGLE SHEETS ====================
 def connecter_google_sheets():
-    """Se connecte à Google Sheets via variable d'environnement"""
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    
     if creds_json:
         creds_dict = json.loads(creds_json)
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
     else:
-        # Pour le test local
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
-    
     return gspread.authorize(creds)
 
 # ==================== FONCTIONS DE SCRAPING ====================
-def get_nom_produit(soup, selecteur):
-    """Extrait le nom du produit"""
-    try:
-        if selecteur:
-            elements = soup.select(selecteur)
-            for el in elements:
-                nom = el.get_text(strip=True)
-                if nom and len(nom) > 3:
-                    return nom[:100]
-        titre = soup.find('title')
-        if titre:
-            return titre.get_text(strip=True)[:100]
-        return "Container standard"
-    except:
-        return "Container standard"
-
-def scraper_boxinnov(url):
+def scraper_rubrique(url, config):
+    """Scrape les produits depuis une page rubrique"""
+    produits = []
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        texte = soup.get_text()
-        match = re.search(r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]', texte)
-        prix = int(match.group(1).replace(' ', '')) if match else None
-        nom = get_nom_produit(soup, "h1, .product-title, .title")
-        return prix, nom
-    except:
-        return None, None
-
-def scraper_site_generique(config):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(config["url"], headers=headers, timeout=15)
+        response = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        texte = soup.get_text()
-        match = re.search(config["motif_prix"], texte, re.I)
-        prix = int(match.group(1).replace(' ', '')) if match else None
+        # Méthode 1 : Chercher par blocs
+        for bloc in soup.find_all(['div', 'article'], class_=re.compile(r'product|item', re.I)):
+            nom = None
+            for selector in config["nom_selector"]:
+                elem = bloc.find(selector)
+                if elem:
+                    nom = elem.get_text(strip=True)
+                    if nom and len(nom) > 3:
+                        break
+            
+            texte = bloc.get_text()
+            match = re.search(config["prix_pattern"], texte, re.I)
+            prix = match.group(1).replace(' ', '') if match else None
+            
+            if nom and prix and len(nom) > 3 and len(prix) > 2:
+                produits.append({'nom': nom[:100], 'prix': int(prix)})
         
-        noms_produits = []
-        for sel in ["h1", "h2", "h3", ".product-title", ".title"]:
-            for el in soup.select(sel):
-                nom = el.get_text(strip=True)
-                if nom and len(nom) > 5 and len(nom) < 100:
-                    if any(mot in nom.lower() for mot in ['container', 'conteneur', 'pieds', 'dry']):
-                        noms_produits.append(nom)
+        # Méthode 2 : Recherche directe si pas assez de produits
+        if len(produits) < 3:
+            texte_page = soup.get_text()
+            matches = re.findall(r'(?:(?:À partir de|dès|à partir de)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;])', texte_page, re.I)
+            if matches:
+                for titre in soup.find_all(config["nom_selector"]):
+                    nom = titre.get_text(strip=True)
+                    if nom and len(nom) > 5:
+                        produits.append({'nom': nom[:100], 'prix': int(matches[0].replace(' ', ''))})
         
-        noms_produits = list(dict.fromkeys(noms_produits))
-        if not noms_produits:
-            noms_produits = ["Container standard"]
-        
-        return prix, noms_produits[:5]
-    except:
-        return None, []
+        return produits
+    except Exception as e:
+        print(f"   Erreur scraping {url}: {e}")
+        return []
 
 # ==================== MISE À JOUR GOOGLE SHEETS ====================
 def colorer_fournisseurs_manuels(sheet):
     """Colore en jaune les fournisseurs à saisie manuelle"""
     try:
-        # Récupérer toutes les données
         data = sheet.get_all_values()
-        
         if len(data) <= 1:
             return
         
-        # Trouver la colonne Fournisseur
         entetes = data[0]
         col_fournisseur = None
         for i, col in enumerate(entetes):
@@ -156,10 +149,8 @@ def colorer_fournisseurs_manuels(sheet):
                 break
         
         if not col_fournisseur:
-            print("   ❌ Colonne 'Fournisseur' non trouvée")
             return
         
-        # Appliquer la couleur jaune
         yellow_format = {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.6}}
         count = 0
         
@@ -174,75 +165,77 @@ def colorer_fournisseurs_manuels(sheet):
         print(f"   ⚠️ Erreur coloration: {e}")
 
 def mettre_a_jour_prix():
-    """Scrape tous les sites et met à jour Google Sheets"""
-    
     print("\n📂 Connexion à Google Sheets...")
     client = connecter_google_sheets()
     sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
     
-    # Récupérer l'entête
-    entetes = sheet.row_values(1)
-    
-    # Préparer les nouvelles lignes
     nouvelles_lignes = []
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    for fournisseur, config in SITES_A_SCRAPER.items():
+    for fournisseur, config in SITES_CONFIG.items():
         print(f"\n🔍 Scraping {fournisseur}...")
+        tous_produits = []
         
-        if config["type"] == "unitaire":
-            prix, nom = scraper_boxinnov(config["url"])
-            noms_produits = [nom] if nom else ["Container"]
-        else:
-            prix, noms_produits = scraper_site_generique(config)
+        for url in config["urls"]:
+            print(f"   📄 {url}")
+            produits = scraper_rubrique(url, config)
+            tous_produits.extend(produits)
+            time.sleep(1)  # Pause entre les pages
         
-        if prix:
-            for nom_produit in noms_produits:
-                # Déterminer le type de container
-                type_container = "20_occ"
-                if "20" in nom_produit and "neuf" in nom_produit.lower():
-                    type_container = "20_neuf"
-                elif "40" in nom_produit and "neuf" in nom_produit.lower():
-                    type_container = "40_neuf"
-                elif "40" in nom_produit:
-                    type_container = "40_occ"
-                elif "20" in nom_produit:
+        if tous_produits:
+            # Supprimer les doublons (même nom)
+            uniques = {}
+            for p in tous_produits:
+                if p['nom'] not in uniques or p['prix'] < uniques[p['nom']]['prix']:
+                    uniques[p['nom']] = p
+            
+            for produit in uniques.values():
+                for region in config["regions"]:
+                    # Déterminer le type de container (optionnel)
                     type_container = "20_occ"
-                
-                nouvelle_ligne = [
-                    timestamp,           # Timestamp
-                    fournisseur,         # Fournisseur
-                    nom_produit,         # Produit
-                    config["region"],    # Région
-                    type_container,      # Type Container
-                    prix,                # Prix TTC
-                    0,                   # Livraison
-                    "selon fournisseur", # Garantie
-                    "variable",          # Délai
-                    config["source"],    # Source
-                    4.0                  # Note
-                ]
-                nouvelles_lignes.append(nouvelle_ligne)
-            print(f"   ✅ Prix trouvé: {prix}€ - {len(noms_produits)} produits")
+                    if "20" in produit['nom'] and "neuf" in produit['nom'].lower():
+                        type_container = "20_neuf"
+                    elif "40" in produit['nom'] and "neuf" in produit['nom'].lower():
+                        type_container = "40_neuf"
+                    elif "40" in produit['nom']:
+                        type_container = "40_occ"
+                    elif "20" in produit['nom']:
+                        type_container = "20_occ"
+                    
+                    nouvelle_ligne = [
+                        timestamp,           # Timestamp
+                        fournisseur,         # Fournisseur
+                        produit['nom'],      # Type Container
+                        region,              # Région
+                        type_container,      # Type Container (code)
+                        produit['prix'],     # Prix TTC
+                        0,                   # Livraison
+                        "selon fournisseur", # Garantie
+                        "variable",          # Délai
+                        config["source"],    # Source
+                        4.0                  # Note
+                    ]
+                    nouvelles_lignes.append(nouvelle_ligne)
+            
+            print(f"   ✅ {len(uniques)} produits trouvés → {len(uniques) * len(config['regions'])} lignes")
         else:
-            print(f"   ⚠️ Aucun prix trouvé")
+            print(f"   ⚠️ Aucun produit trouvé")
     
-    # Ajouter les nouvelles lignes au sheet
+    # Ajouter les nouvelles lignes
     if nouvelles_lignes:
+        print(f"\n📝 Ajout de {len(nouvelles_lignes)} lignes...")
         for ligne in nouvelles_lignes:
             sheet.append_row(ligne, value_input_option='USER_ENTERED')
-        print(f"\n✅ {len(nouvelles_lignes)} prix ajoutés")
         
-        # Colorer les fournisseurs manuels
+        print(f"✅ {len(nouvelles_lignes)} lignes ajoutées")
         colorer_fournisseurs_manuels(sheet)
     else:
-        print("⚠️ Aucun prix ajouté")
+        print("⚠️ Aucune donnée ajoutée")
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("📦 SCRAPING DES PRIX CONTAINERS")
+    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS")
     print("="*50)
-    
     mettre_a_jour_prix()
     print("\n✅ Script terminé")
