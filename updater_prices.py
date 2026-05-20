@@ -1,314 +1,248 @@
-import gspread
-from google.oauth2.service_account import Credentials
-from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
 import re
-import time
+import pandas as pd
+from datetime import datetime
+import openpyxl
+from openpyxl.styles import PatternFill
 import os
-import json
 
 # ==================== CONFIGURATION ====================
-# ID du Google Sheets (à modifier)
-SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"
-
-# Nom de la feuille
+FICHIER_EXCEL = "Fichier comparateur de prix.xlsx"
 FEUILLE_HISTORIQUE = "HistoriquePrix"
 
-# URLs exploitables (scraping automatique)
-URLS_AUTO = {
-    "LeBonCoin Marketplace": "https://www.leboncoin.fr/recherche?text=container+occasion",
-    "eBay France": "https://www.ebay.fr/sch/i.html?_nkw=container+occasion",
-    "ManoMano": "https://www.manomano.fr/cat/container+stockage",
-    "Amazon Business": "https://www.amazon.fr/s?k=container+occasion"
+# Sites à scraper avec leurs configurations
+SITES_A_SCRAPER = {
+    "Box'Innov": {
+        "url": "https://www.boxinnov.com/conteneurs-maritimes/conteneur-6-pieds-dry/",
+        "type": "unitaire",
+        "selecteur_prix": ".price, .product-price",
+        "selecteur_nom": "h1, .product-title",
+        "region": "all",
+        "source": "fournisseur_direct"
+    },
+    "CFC": {
+        "url": "https://compagnie-francaise-du-conteneur.fr/produits/20-pieds-dry",
+        "type": "generique",
+        "motif_prix": r"(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]\s?TTC",
+        "selecteur_nom": "h1, .product-title",
+        "region": "all",
+        "source": "fournisseur_direct"
+    },
+    "Eurobox": {
+        "url": "https://eurobox.fr/categorie-produit/containers/containers-maritime/",
+        "type": "generique",
+        "motif_prix": r"(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]\s?HT",
+        "selecteur_nom": "h2, h3, .product-title",
+        "region": "all",
+        "source": "fournisseur_direct"
+    },
+    "MouvBox": {
+        "url": "https://mouvbox-france.com/categorie-produit/containers/les-standards/",
+        "type": "generique",
+        "motif_prix": r"(?:dès|à partir de)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]",
+        "selecteur_nom": "h2, h3, .product-title",
+        "region": "all",
+        "source": "fournisseur_direct"
+    },
+    "Cubner": {
+        "url": "https://cubner.com/categorie-produit/conteneur-dry/",
+        "type": "generique",
+        "motif_prix": r"(?:à partir de|dès)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]",
+        "selecteur_nom": "h2, h3, .product-title",
+        "region": "all",
+        "source": "fournisseur_direct"
+    }
 }
 
-# Fournisseurs qui nécessitent une saisie manuelle
+# Fournisseurs à saisie manuelle (colorés en jaune)
 FOURNISSEURS_MANUELS = [
     "Nord Container", "2M Containers", "Easy Container", "BBox Container",
     "Méditerranée Containers", "ABC Container", "Est Container", "Ouest Container",
-    "IDF Containers", "Toulouse Container"
+    "IDF Containers", "Toulouse Container", "Resotainer", "TITAN Containers France",
+    "Bluetainer", "ContainerZ", "Sea Box Company"
 ]
 
-# ==================== CONNEXION GOOGLE SHEETS ====================
-def connecter_google_sheets():
-    """Se connecte à Google Sheets via variable d'environnement"""
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-    
-    if not creds_json:
-        raise Exception("❌ Variable GOOGLE_CREDENTIALS non définie")
-    
-    creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-    return gspread.authorize(creds)
-
-# ==================== SCRAPING AMÉLIORÉ ====================
-def scraper_leboncoin(url):
+# ==================== FONCTIONS DE SCRAPING ====================
+def get_nom_produit(soup, selecteur):
+    """Extrait le nom du produit depuis le HTML"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'fr,fr-FR;q=0.8,en;q=0.5',
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        prix_elements = soup.select('[data-test-id="price"], .price, .ProductPrice')
-        prix = []
-        for el in prix_elements[:5]:
-            texte = re.sub(r'[^0-9]', '', el.text)
-            if texte and len(texte) > 2:
-                prix.append(int(texte))
-        
-        if not prix:
-            texte_page = soup.get_text()
-            matches = re.findall(r'(\d{4,5})\s?[€]', texte_page)
-            if matches:
-                prix = [int(m) for m in matches[:5]]
-        
-        return min(prix) if prix else None
-    except Exception as e:
-        print(f"   Erreur: {e}")
-        return None
-
-def scraper_ebay(url):
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        prix_elements = soup.select('.s-item__price, .vi-price, .x-price-primary')
-        prix = []
-        for el in prix_elements[:5]:
-            texte = re.sub(r'[^0-9]', '', el.text)
-            if texte and len(texte) > 2:
-                prix.append(int(texte))
-        
-        return min(prix) if prix else None
+        if selecteur:
+            elements = soup.select(selecteur)
+            for el in elements:
+                nom = el.get_text(strip=True)
+                if nom and len(nom) > 3 and not nom.startswith('#'):
+                    return nom[:100]  # Limiter la longueur
+        # Fallback: chercher dans le titre de la page
+        titre = soup.find('title')
+        if titre:
+            return titre.get_text(strip=True)[:100]
+        return "Produit inconnu"
     except:
-        return None
+        return "Produit inconnu"
 
-def scraper_manomano(url):
+def scraper_boxinnov(url):
+    """Scrape le prix unitaire et le nom sur Box'Innov"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        selecteurs = ['.product-price', '.price', '.js-price', '[data-price]']
+        # Prix
+        texte = soup.get_text()
+        match = re.search(r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]', texte)
+        prix = int(match.group(1).replace(' ', '')) if match else None
+        
+        # Nom du produit
+        nom = get_nom_produit(soup, "h1, .product-title, .title")
+        
+        return prix, nom
+    except Exception as e:
+        print(f"   Erreur Box'Innov: {e}")
+        return None, None
+
+def scraper_site_generique(config):
+    """Scrape le prix générique et les noms de produits"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(config["url"], headers=headers, timeout=15)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Prix
+        texte = soup.get_text()
+        match = re.search(config["motif_prix"], texte, re.I)
+        prix = int(match.group(1).replace(' ', '')) if match else None
+        
+        # Noms des produits
+        noms_produits = []
+        selecteurs = ["h2", "h3", ".product-title", ".product-name", ".title"]
+        
         for sel in selecteurs:
             elements = soup.select(sel)
             for el in elements:
-                texte = re.sub(r'[^0-9]', '', el.text)
-                if texte and len(texte) > 2:
-                    return int(texte)
-        return None
-    except:
-        return None
-
-def scraper_amazon(url):
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
+                nom = el.get_text(strip=True)
+                if nom and len(nom) > 5 and len(nom) < 100:
+                    if any(mot in nom.lower() for mot in ['container', 'conteneur', 'pieds', 'dry', '20', '40']):
+                        noms_produits.append(nom)
         
-        prix_elements = soup.select('.a-price-whole, .a-offscreen')
-        for el in prix_elements[:5]:
-            texte = re.sub(r'[^0-9]', '', el.text)
-            if texte and len(texte) > 2:
-                return int(texte)
-        return None
-    except:
-        return None
+        # Supprimer les doublons
+        noms_produits = list(dict.fromkeys(noms_produits))
+        
+        if not noms_produits:
+            noms_produits = ["Container standard"]
+        
+        return prix, noms_produits
+    except Exception as e:
+        print(f"   Erreur: {e}")
+        return None, []
 
-# ==================== COLORATION DES FOURNISSEURS MANUELS ====================
+# ==================== MISE À JOUR EXCEL ====================
 def colorer_fournisseurs_manuels():
     """Colore en jaune les fournisseurs à saisie manuelle"""
-    
-    print("🎨 Coloration des fournisseurs manuels...")
-    client = connecter_google_sheets()
-    sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
-    
-    # Récupérer toutes les données
-    data = sheet.get_all_values()
-    
-    if len(data) <= 1:
-        print("   ❌ Aucune donnée trouvée")
-        return
-    
-    # Trouver la colonne Fournisseur (insensible à la casse)
-    entetes = data[0]
-    col_fournisseur = None
-    for i, col in enumerate(entetes):
-        if col.lower() == "fournisseur":
-            col_fournisseur = i
-            print(f"   ✅ Colonne 'Fournisseur' trouvée (colonne {i+1})")
-            break
-    
-    if col_fournisseur is None:
-        print("   ❌ Colonne 'Fournisseur' non trouvée")
-        print(f"   📋 Entêtes disponibles: {entetes}")
-        return
-    
-    # Parcourir les lignes et colorer
-    count = 0
-    for row_idx in range(1, len(data)):  # row_idx 0 = ligne 1 (entêtes)
-        fournisseur = data[row_idx][col_fournisseur]
+    try:
+        wb = openpyxl.load_workbook(FICHIER_EXCEL)
+        ws = wb[FEUILLE_HISTORIQUE]
         
-        if fournisseur in FOURNISSEURS_MANUELS:
-            # Colorer la cellule (ligne row_idx+1, colonne col_fournisseur+1)
-            cell_ref = f"{chr(65 + col_fournisseur)}{row_idx + 1}"
-            sheet.format(cell_ref, {
-                "backgroundColor": {
-                    "red": 1.0,
-                    "green": 1.0,
-                    "blue": 0.6
-                }
-            })
-            count += 1
-            print(f"   🟡 {fournisseur} coloré")
-    
-    print(f"\n✅ {count} fournisseurs colorés en jaune")
-    
-    # Afficher les fournisseurs trouvés dans le sheet
-    fournisseurs_trouves = set()
-    for row_idx in range(1, min(len(data), 30)):
-        fournisseurs_trouves.add(data[row_idx][col_fournisseur])
-    
-    print(f"\n📊 Fournisseurs dans le sheet: {sorted(fournisseurs_trouves)}")
-    
-    # Afficher ceux qui ne correspondent pas
-    manquants = [f for f in FOURNISSEURS_MANUELS if f not in fournisseurs_trouves]
-    if manquants:
-        print(f"\n⚠️ Fournisseurs attendus non trouvés: {manquants}")
+        col_fournisseur = None
+        for col in range(1, 20):
+            if ws.cell(1, col).value == "Fournisseur":
+                col_fournisseur = col
+                break
         
+        if not col_fournisseur:
+            print("❌ Colonne 'Fournisseur' non trouvée")
+            return
+        
+        yellow_fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")
+        count = 0
+        
+        for row in range(2, ws.max_row + 1):
+            fournisseur = ws.cell(row, col_fournisseur).value
+            if fournisseur in FOURNISSEURS_MANUELS:
+                ws.cell(row, col_fournisseur).fill = yellow_fill
+                count += 1
+        
+        wb.save(FICHIER_EXCEL)
+        print(f"✅ {count} fournisseurs colorés en jaune")
+    except Exception as e:
+        print(f"Erreur coloration: {e}")
 
-# ==================== MISE À JOUR GOOGLE SHEETS ====================
-def mettre_a_jour_prix_auto():
-    """Scrape les prix et met à jour Google Sheets"""
+def mettre_a_jour_prix():
+    """Scrape tous les sites et met à jour le fichier Excel"""
     
-    print("📂 Connexion à Google Sheets...")
-    client = connecter_google_sheets()
-    sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
+    print("\n📂 Mise à jour des prix...")
     
-    toutes_les_lignes = sheet.get_all_values()
-    entetes = toutes_les_lignes[0]
+    try:
+        df = pd.read_excel(FICHIER_EXCEL, sheet_name=FEUILLE_HISTORIQUE)
+    except:
+        df = pd.DataFrame(columns=['Timestamp', 'Fournisseur', 'Produit', 'Région', 'Type Container', 
+                                   'Prix TTC', 'Livraison', 'Garantie', 'Délai', 'Source', 'Note'])
     
-    col_url = None
-    for i, col in enumerate(entetes):
-        if col.lower() == "url":
-            col_url = i + 1
-            break
+    nouvelles_lignes = []
+    timestamp = datetime.now()
     
-    nouveaux_prix = []
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
-    scraper_functions = {
-        "LeBonCoin Marketplace": scraper_leboncoin,
-        "eBay France": scraper_ebay,
-        "ManoMano": scraper_manomano,
-        "Amazon Business": scraper_amazon
-    }
-    
-    for fournisseur, scraper_func in scraper_functions.items():
-        if fournisseur not in URLS_AUTO:
-            continue
+    for fournisseur, config in SITES_A_SCRAPER.items():
+        print(f"\n🔍 Scraping {fournisseur}...")
         
-        url = URLS_AUTO[fournisseur]
-        print(f"🔍 Scraping {fournisseur}...")
-        prix = scraper_func(url)
+        if config["type"] == "unitaire":
+            prix, nom = scraper_boxinnov(config["url"])
+            noms_produits = [nom] if nom else ["Container"]
+        else:
+            prix, noms_produits = scraper_site_generique(config)
         
-        if prix:
-            for type_container in ["20_occ", "20_neuf", "40_occ", "40_neuf"]:
-                if type_container == "20_neuf":
-                    prix_ajuste = int(prix * 1.8)
-                elif type_container == "40_occ":
-                    prix_ajuste = int(prix * 1.5)
-                elif type_container == "40_neuf":
-                    prix_ajuste = int(prix * 2.2)
-                else:
-                    prix_ajuste = prix
+        if prix and noms_produits:
+            for nom_produit in noms_produits[:5]:  # Limiter à 5 produits par site
+                # Déterminer le type de container à partir du nom
+                type_container = "20_occ"
+                if "20" in nom_produit and "neuf" in nom_produit.lower():
+                    type_container = "20_neuf"
+                elif "40" in nom_produit and "neuf" in nom_produit.lower():
+                    type_container = "40_neuf"
+                elif "40" in nom_produit:
+                    type_container = "40_occ"
+                elif "20" in nom_produit:
+                    type_container = "20_occ"
                 
-                nouvelle_ligne = [
-                    timestamp, fournisseur, "all", type_container,
-                    prix_ajuste, 0, "selon vendeur", "variable",
-                    "marketplace", 4.0, 0
-                ]
-                
-                if col_url:
-                    nouvelle_ligne.append(url)
-                
-                nouveaux_prix.append(nouvelle_ligne)
-            
-            print(f"   ✅ Prix trouvé: {prix}€")
+                nouvelle_ligne = {
+                    'Timestamp': timestamp,
+                    'Fournisseur': fournisseur,
+                    'Produit': nom_produit,
+                    'Région': config["region"],
+                    'Type Container': type_container,
+                    'Prix TTC': prix,
+                    'Livraison': 0,
+                    'Garantie': "selon fournisseur",
+                    'Délai': "variable",
+                    'Source': config["source"],
+                    'Note': 4.0
+                }
+                nouvelles_lignes.append(nouvelle_ligne)
+            print(f"   ✅ {len(noms_produits)} produits trouvés - Prix: {prix} €")
         else:
             print(f"   ⚠️ Aucun prix trouvé")
+    
+    # Ajouter les nouvelles lignes
+    if nouvelles_lignes:
+        df_nouvelles = pd.DataFrame(nouvelles_lignes)
+        df_final = pd.concat([df, df_nouvelles], ignore_index=True)
         
-        time.sleep(2)
-    
-    if nouveaux_prix:
-        for ligne in nouveaux_prix:
-            sheet.append_row(ligne, value_input_option='USER_ENTERED')
-        print(f"\n✅ {len(nouveaux_prix)} prix automatiques ajoutés")
+        with pd.ExcelWriter(FICHIER_EXCEL, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            df_final.to_excel(writer, sheet_name=FEUILLE_HISTORIQUE, index=False)
+        
+        print(f"\n✅ {len(nouvelles_lignes)} lignes ajoutées")
+        colorer_fournisseurs_manuels()
     else:
-        print("⚠️ Aucun prix automatique ajouté")
-
-def afficher_statut():
-    """Affiche les fournisseurs manquants"""
-    
-    print("\n" + "="*50)
-    print("📊 STATUT DES FOURNISSEURS")
-    print("="*50)
-    
-    for fournisseur in FOURNISSEURS_MANUELS:
-        print(f"🟡 {fournisseur}: à mettre à jour manuellement")
-    
-    print("\n✅ Fournisseurs automatiques :")
-    for fournisseur in URLS_AUTO.keys():
-        print(f"   🤖 {fournisseur}")
-
-def ajouter_colonne_url():
-    """Ajoute la colonne URL si elle n'existe pas"""
-    
-    client = connecter_google_sheets()
-    sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
-    
-    entetes = sheet.row_values(1)
-    
-    if "URL" not in entetes:
-        nouvelle_entete = entetes + ["URL"]
-        sheet.update('A1:Z1', [nouvelle_entete])
-        print("✅ Colonne 'URL' ajoutée")
-    else:
-        print("✅ Colonne 'URL' existe déjà")
+        print("⚠️ Aucune donnée ajoutée")
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
-    import sys
-    
     print("\n" + "="*50)
-    print("📦 MISE À JOUR AUTOMATIQUE DES PRIX")
+    print("📦 SCRAPING DES PRIX CONTAINERS")
     print("="*50)
     
-    if len(sys.argv) > 1:
-        choix = sys.argv[1]
-    else:
-        choix = "1"
+    if not os.path.exists(FICHIER_EXCEL):
+        print(f"❌ Fichier {FICHIER_EXCEL} non trouvé")
+        exit()
     
-    if choix == "1":
-        mettre_a_jour_prix_auto()
-    elif choix == "2":
-        afficher_statut()
-    elif choix == "3":
-        ajouter_colonne_url()
-    elif choix == "4":
-        colorer_fournisseurs_manuels()
-    else:
-        print("Choix invalide")
+    mettre_a_jour_prix()
+    print("\n✅ Script terminé")
