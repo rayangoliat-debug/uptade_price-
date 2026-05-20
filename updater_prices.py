@@ -7,10 +7,14 @@ from datetime import datetime
 import os
 import json
 import time
+import sys
+
+# Forcer l'affichage immédiat
+sys.stdout.reconfigure(line_buffering=True)
 
 # ==================== CONFIGURATION ====================
 # 🔧 REMPLACE PAR L'ID DE TON GOOGLE SHEETS 🔧
-SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"  # ← Ton ID
+SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"
 
 # Nom de la feuille cible
 FEUILLE_HISTORIQUE = "HistoriquePrix"
@@ -20,10 +24,8 @@ SITES_CONFIG = {
     "Box'Innov": {
         "urls": ["https://www.boxinnov.com/conteneur-maritime/"],
         "regions": ["Lyon", "Nantes", "Marseille"],
-        "type": "rubrique",
         "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
-        "source": "fournisseur_direct"
     },
     "Eurobox": {
         "urls": [
@@ -31,34 +33,26 @@ SITES_CONFIG = {
             "https://eurobox.fr/categorie-produit/containers/containers-maritime/page/2/"
         ],
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
-        "type": "rubrique",
         "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title", "span"],
-        "source": "fournisseur_direct"
     },
     "Cubner": {
         "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
         "regions": ["Paris", "Lyon"],
-        "type": "rubrique",
         "prix_pattern": r'(?:à partir de|dès)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title", ".title"],
-        "source": "fournisseur_direct"
     },
     "MouvBox": {
         "urls": ["https://mouvbox-france.com/categorie-produit/containers/les-standards/"],
         "regions": ["Toulouse", "Perpignan"],
-        "type": "rubrique",
         "prix_pattern": r'(?:dès|à partir de)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
-        "source": "fournisseur_direct"
     },
     "CFC": {
         "urls": ["https://compagnie-francaise-du-conteneur.fr/collections/standards"],
         "regions": ["Marseille", "Lyon", "Lille"],
-        "type": "rubrique",
         "prix_pattern": r'À partir de\s*(\d{1,3}(?:[\s]?\d{3})?)[\s,]?(\d{2})?\s?[€&euro;]\s?TTC',
         "nom_selector": ["h2", "h3", ".product-title"],
-        "source": "fournisseur_direct"
     },
     "ACM Container": {
         "urls": [
@@ -66,10 +60,8 @@ SITES_CONFIG = {
             "https://acm-container.fr/conteneurs-maritimes/occasion/"
         ],
         "regions": ["Marseille"],
-        "type": "rubrique",
         "prix_pattern": r'(?:à partir de|À partir de)\s*(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
-        "source": "fournisseur_direct"
     }
 }
 
@@ -149,6 +141,7 @@ def colorer_fournisseurs_manuels(sheet):
                 break
         
         if not col_fournisseur:
+            print("   ❌ Colonne 'Fournisseur' non trouvée")
             return
         
         yellow_format = {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.6}}
@@ -165,7 +158,8 @@ def colorer_fournisseurs_manuels(sheet):
         print(f"   ⚠️ Erreur coloration: {e}")
 
 def mettre_a_jour_prix():
-    print("\n📂 Connexion à Google Sheets...")
+    print("📍 Début de la mise à jour", flush=True)
+    print("📂 Connexion à Google Sheets...", flush=True)
     client = connecter_google_sheets()
     sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
     
@@ -173,17 +167,17 @@ def mettre_a_jour_prix():
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     for fournisseur, config in SITES_CONFIG.items():
-        print(f"\n🔍 Scraping {fournisseur}...")
+        print(f"\n🔍 Scraping {fournisseur}...", flush=True)
         tous_produits = []
         
         for url in config["urls"]:
-            print(f"   📄 {url}")
+            print(f"   📄 {url}", flush=True)
             produits = scraper_rubrique(url, config)
             tous_produits.extend(produits)
-            time.sleep(1)  # Pause entre les pages
+            time.sleep(1)
         
         if tous_produits:
-            # Supprimer les doublons (même nom)
+            # Supprimer les doublons
             uniques = {}
             for p in tous_produits:
                 if p['nom'] not in uniques or p['prix'] < uniques[p['nom']]['prix']:
@@ -191,57 +185,54 @@ def mettre_a_jour_prix():
             
             for produit in uniques.values():
                 for region in config["regions"]:
-                    # Déterminer le type de container (optionnel)
-                    type_container = "20_occ"
-                    if "20" in produit['nom'] and "neuf" in produit['nom'].lower():
-                        type_container = "20_neuf"
-                    elif "40" in produit['nom'] and "neuf" in produit['nom'].lower():
-                        type_container = "40_neuf"
-                    elif "40" in produit['nom']:
-                        type_container = "40_occ"
-                    elif "20" in produit['nom']:
-                        type_container = "20_occ"
-                    
+                    # Structure corrigée des colonnes
                     nouvelle_ligne = [
-                        timestamp,           # Timestamp
-                        fournisseur,         # Fournisseur
-                        produit['nom'],      # Type Container
-                        region,              # Région
-                        type_container,      # Type Container (code)
-                        produit['prix'],     # Prix TTC
-                        0,                   # Livraison
-                        "selon fournisseur", # Garantie
-                        "variable",          # Délai
-                        config["source"],    # Source
-                        4.0                  # Note
+                        timestamp,           # A - Timestamp
+                        fournisseur,         # B - Fournisseur
+                        produit['nom'],      # C - Type Container (nom du produit)
+                        region,              # D - Région
+                        "20_occ",            # E - Code type (par défaut)
+                        produit['prix'],     # F - Prix TTC (colonne correcte)
+                        0,                   # G - Livraison
+                        "selon fournisseur", # H - Garantie
+                        "variable",          # I - Délai
+                        "scraping",          # J - Source
+                        4.0                  # K - Note
                     ]
                     nouvelles_lignes.append(nouvelle_ligne)
             
-            print(f"   ✅ {len(uniques)} produits trouvés → {len(uniques) * len(config['regions'])} lignes")
+            print(f"   ✅ {len(uniques)} produits trouvés → {len(uniques) * len(config['regions'])} lignes", flush=True)
         else:
-            print(f"   ⚠️ Aucun produit trouvé")
+            print(f"   ⚠️ Aucun produit trouvé", flush=True)
     
-    # Ajouter les nouvelles lignes AVEC PAUSE pour éviter l'erreur 429
+    # Ajouter les nouvelles lignes
     if nouvelles_lignes:
-        print(f"\n📝 Ajout de {len(nouvelles_lignes)} lignes...")
+        print(f"\n📝 Ajout de {len(nouvelles_lignes)} lignes...", flush=True)
         for i, ligne in enumerate(nouvelles_lignes):
             try:
                 sheet.append_row(ligne, value_input_option='USER_ENTERED')
                 if (i + 1) % 10 == 0:
-                    print(f"   {i + 1}/{len(nouvelles_lignes)} lignes ajoutées...")
-                time.sleep(0.5)  # Pause de 0.5 seconde pour éviter le quota
+                    print(f"   {i + 1}/{len(nouvelles_lignes)} lignes ajoutées...", flush=True)
+                time.sleep(0.5)
             except Exception as e:
-                print(f"   ⚠️ Erreur ligne {i+1}: {e}")
+                print(f"   ⚠️ Erreur ligne {i+1}: {e}", flush=True)
         
-        print(f"\n✅ {len(nouvelles_lignes)} lignes ajoutées")
+        print(f"\n✅ {len(nouvelles_lignes)} lignes ajoutées", flush=True)
         colorer_fournisseurs_manuels(sheet)
     else:
-        print("⚠️ Aucune donnée ajoutée")
+        print("⚠️ Aucune donnée ajoutée", flush=True)
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
-    print("\n" + "="*50)
-    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS")
-    print("="*50)
-    mettre_a_jour_prix()
-    print("\n✅ Script terminé")
+    print("\n" + "="*50, flush=True)
+    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS", flush=True)
+    print("="*50, flush=True)
+    print(f"Heure de début: {datetime.now()}", flush=True)
+    
+    try:
+        mettre_a_jour_prix()
+        print("\n✅ Script terminé avec succès", flush=True)
+    except Exception as e:
+        print(f"\n❌ Erreur fatale: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
