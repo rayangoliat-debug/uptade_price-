@@ -9,7 +9,7 @@ import json
 
 # ==================== CONFIGURATION ====================
 # 🔧 REMPLACE CET ID PAR LE TIEN 🔧
-SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y" 
+SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1YY" 
 
 # Nom de la feuille à mettre à jour
 FEUILLE_HISTORIQUE = "HistoriquePrix"
