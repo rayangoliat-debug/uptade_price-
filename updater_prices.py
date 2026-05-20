@@ -82,6 +82,58 @@ def connecter_google_sheets():
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
     return gspread.authorize(creds)
 
+# ==================== LECTURE DES PRIX EXISTANTS ====================
+def get_prix_existants(sheet):
+    """Récupère les prix existants dans le sheet"""
+    prix_existants = {}
+    try:
+        data = sheet.get_all_values()
+        if len(data) <= 1:
+            return prix_existants
+        
+        entetes = data[0]
+        indices = {}
+        for i, col in enumerate(entetes):
+            col_lower = col.lower()
+            if col_lower == "fournisseur":
+                indices["fournisseur"] = i
+            elif col_lower == "région":
+                indices["region"] = i
+            elif col_lower == "type container":
+                indices["type"] = i
+            elif col_lower == "prix ttc":
+                indices["prix"] = i
+        
+        if len(indices) < 4:
+            return prix_existants
+        
+        for row_idx, row in enumerate(data[1:], start=2):
+            if len(row) > max(indices.values()):
+                key = f"{row[indices['fournisseur']]}|{row[indices['region']]}|{row[indices['type']]}"
+                try:
+                    prix_existants[key] = {
+                        "prix": float(row[indices['prix']]),
+                        "row": row_idx
+                    }
+                except:
+                    pass
+    except Exception as e:
+        print(f"   ⚠️ Erreur lecture existants: {e}")
+    
+    return prix_existants
+
+def mettre_a_jour_prix_existant(sheet, row, nouveau_prix, timestamp):
+    """Met à jour le prix d'une ligne existante"""
+    try:
+        # Mettre à jour la colonne Prix TTC (colonne E = index 5)
+        sheet.update_cell(row, 5, nouveau_prix)
+        # Mettre à jour le timestamp (colonne A)
+        sheet.update_cell(row, 1, timestamp)
+        return True
+    except Exception as e:
+        print(f"   ⚠️ Erreur mise à jour ligne {row}: {e}")
+        return False
+
 # ==================== FONCTIONS DE SCRAPING ====================
 def scraper_rubrique(url, config):
     produits = []
@@ -157,8 +209,13 @@ def mettre_a_jour_prix():
     client = connecter_google_sheets()
     sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
     
-    nouvelles_lignes = []
+    # Récupérer les prix existants
+    prix_existants = get_prix_existants(sheet)
+    print(f"📊 {len(prix_existants)} prix existants chargés", flush=True)
+    
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    nouvelles_lignes = []
+    stats = {"nouveaux": 0, "modifies": 0, "identiques": 0}
     
     for fournisseur, config in SITES_CONFIG.items():
         print(f"\n🔍 Scraping {fournisseur}...", flush=True)
@@ -178,28 +235,44 @@ def mettre_a_jour_prix():
             
             for produit in uniques.values():
                 for region in config["regions"]:
-                    # Structure correcte des colonnes
-                    nouvelle_ligne = [
-                        timestamp,           # A - Timestamp
-                        fournisseur,         # B - Fournisseur
-                        region,              # C - Région
-                        produit['nom'],      # D - Type Container
-                        produit['prix'],     # E - Prix TTC
-                        0,                   # F - Livraison
-                        "",                  # G - Garantie
-                        "",                  # H - Délai
-                        "fournisseur",          # I - Source
-                        0,                   # J - Note
-                        0                    # K - Variation %
-                    ]
-                    nouvelles_lignes.append(nouvelle_ligne)
+                    key = f"{fournisseur}|{region}|{produit['nom']}"
+                    prix_actuel = produit['prix']
+                    
+                    if key not in prix_existants:
+                        # Nouveau produit → ajouter
+                        nouvelle_ligne = [
+                            timestamp,           # A - Timestamp
+                            fournisseur,         # B - Fournisseur
+                            region,              # C - Région
+                            produit['nom'],      # D - Type Container
+                            prix_actuel,         # E - Prix TTC
+                            0,                   # F - Livraison
+                            "",                  # G - Garantie
+                            "",                  # H - Délai
+                            fournisseur,         # I - Source
+                            0,                   # J - Note
+                            0                    # K - Variation %
+                        ]
+                        nouvelles_lignes.append(nouvelle_ligne)
+                        stats["nouveaux"] += 1
+                    else:
+                        ancien_prix = prix_existants[key]["prix"]
+                        if ancien_prix != prix_actuel:
+                            # Prix changé → mettre à jour
+                            row = prix_existants[key]["row"]
+                            if mettre_a_jour_prix_existant(sheet, row, prix_actuel, timestamp):
+                                stats["modifies"] += 1
+                                print(f"   📝 MAJ {produit['nom']} ({region}) : {ancien_prix}€ → {prix_actuel}€", flush=True)
+                        else:
+                            stats["identiques"] += 1
             
-            print(f"   ✅ {len(uniques)} produits trouvés → {len(uniques) * len(config['regions'])} lignes", flush=True)
+            print(f"   ✅ {len(uniques)} produits trouvés", flush=True)
         else:
             print(f"   ⚠️ Aucun produit trouvé", flush=True)
     
+    # Ajouter les nouvelles lignes
     if nouvelles_lignes:
-        print(f"\n📝 Ajout de {len(nouvelles_lignes)} lignes...", flush=True)
+        print(f"\n📝 Ajout de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
         for i, ligne in enumerate(nouvelles_lignes):
             try:
                 sheet.append_row(ligne, value_input_option='USER_ENTERED')
@@ -209,10 +282,15 @@ def mettre_a_jour_prix():
             except Exception as e:
                 print(f"   ⚠️ Erreur ligne {i+1}: {e}", flush=True)
         
-        print(f"\n✅ {len(nouvelles_lignes)} nouvelles lignes ajoutées", flush=True)
-        colorer_fournisseurs_manuels(sheet)
-    else:
-        print("⚠️ Aucune donnée ajoutée", flush=True)
+        print(f"\n✅ {len(nouvelles_lignes)} nouveaux produits ajoutés", flush=True)
+    
+    # Afficher le résumé
+    print(f"\n📊 RÉSUMÉ DES CHANGEMENTS:", flush=True)
+    print(f"   🆕 Nouveaux produits: {stats['nouveaux']}", flush=True)
+    print(f"   📝 Prix modifiés: {stats['modifies']}", flush=True)
+    print(f"   🔄 Prix identiques: {stats['identiques']}", flush=True)
+    
+    colorer_fournisseurs_manuels(sheet)
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
