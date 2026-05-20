@@ -10,7 +10,7 @@ import time
 
 # ==================== CONFIGURATION ====================
 # 🔧 REMPLACE PAR L'ID DE TON GOOGLE SHEETS 🔧
-SHEET_ID = "1XBidRt-lJX9zXD3ZCCWZ-A1xKiW9NVrM5sVRPM5wce4"  # ← Ton ID
+SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"  # ← Ton ID
 
 # Nom de la feuille cible
 FEUILLE_HISTORIQUE = "HistoriquePrix"
