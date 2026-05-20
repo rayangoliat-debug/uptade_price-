@@ -14,7 +14,7 @@ sys.stdout.reconfigure(line_buffering=True)
 
 # ==================== CONFIGURATION ====================
 # 🔧 REMPLACE PAR L'ID DE TON GOOGLE SHEETS 🔧
-SHEET_ID = "1XBidRt-lJX9zXD3ZCCWZ-A1xKiW9NVrM5sVRPM5wce4"
+SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"
 FEUILLE_HISTORIQUE = "HistoriquePrix"
 
 # Configuration des sites à scraper
