@@ -22,6 +22,7 @@ SITES_CONFIG = {
     "Box'Innov": {
         "urls": ["https://www.boxinnov.com/conteneur-maritime/"],
         "regions": ["Lyon", "Nantes", "Marseille"],
+        "type_scraping": "standard",
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
@@ -32,12 +33,14 @@ SITES_CONFIG = {
             "https://eurobox.fr/categorie-produit/containers/containers-de-stockage/"
         ],
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
-        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
-        "nom_selector": ["h2", "h3", ".product-title"],
+        "type_scraping": "eurobox",
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]',
+        "nom_selector": ["h2", "h3"],
     },
     "Cubner": {
         "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
         "regions": ["Paris", "Lyon"],
+        "type_scraping": "cubner",
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*),\s*(\d{2})?\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
@@ -47,17 +50,16 @@ SITES_CONFIG = {
             "https://mouvbox-france.com/categorie-produit/destockage/"
         ],
         "regions": ["Toulouse", "Perpignan"],
+        "type_scraping": "standard",
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
     "CFC": {
-        "urls": [
-            "https://compagnie-francaise-du-conteneur.fr/collections/standards",
-            "http://compagnie-francaise-du-conteneur.fr/produits/20-pieds-hc"
-        ],
+        "urls": ["http://compagnie-francaise-du-conteneur.fr/produits/20-pieds-hc"],
         "regions": ["Marseille", "Lyon", "Lille"],
+        "type_scraping": "standard",
         "prix_pattern": r'À partir de\s*(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*),\s*(\d{2})?\s?[€&euro;]\s?TTC',
-        "nom_selector": ["h2", "h3", ".product-title", "h1"],
+        "nom_selector": ["h1"],
     },
     "ACM Container": {
         "urls": [
@@ -65,8 +67,10 @@ SITES_CONFIG = {
             "https://acm-container.fr/conteneurs-maritimes/occasion/"
         ],
         "regions": ["Marseille"],
+        "type_scraping": "acm",
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
-        "nom_selector": ["h1", "h2", "h3", ".product-title"],
+        "nom_selector": ["h2", "h3", ".product-title"],
+        "max_nom_length": 60,
     }
 }
 
@@ -91,75 +95,142 @@ def connecter_google_sheets():
 
 # ==================== GESTION DES ERREURS 429 ====================
 def ajouter_avec_retry(sheet, ligne, max_retries=3):
-    """Ajoute une ligne avec réessai en cas d'erreur 429 (quota dépassé)"""
     for i in range(max_retries):
         try:
             sheet.append_row(ligne, value_input_option='USER_ENTERED')
             return True
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
-                wait = (i + 1) * 5  # 5, 10, 15 secondes
-                print(f"   ⏳ Quota dépassé, pause de {wait}s avant réessai...", flush=True)
+                wait = (i + 1) * 5
+                print(f"   ⏳ Quota dépassé, pause de {wait}s...", flush=True)
                 time.sleep(wait)
             else:
                 print(f"   ❌ Erreur: {e}", flush=True)
                 return False
     return False
 
-# ==================== FONCTIONS DE SCRAPING ====================
+# ==================== FONCTIONS DE SCRAPING SPÉCIFIQUES ====================
 def extraire_prix(texte, pattern):
-    """Extrait et nettoie le prix correctement"""
     match = re.search(pattern, texte, re.I)
     if not match:
         return None
-    
     prix_brut = match.group(1)
-    
-    # Supprimer TOUS les caractères non numériques
     prix_propre = re.sub(r'[^\d]', '', prix_brut)
-    
-    if prix_propre:
-        return int(prix_propre)
-    return None
+    return int(prix_propre) if prix_propre else None
+
+def scraper_eurobox(soup, config):
+    """Scraping spécifique pour Eurobox"""
+    produits = []
+    for bloc in soup.find_all(['div', 'li'], class_=re.compile(r'product|item', re.I)):
+        nom = None
+        for selector in config["nom_selector"]:
+            elem = bloc.find(selector)
+            if elem:
+                nom = elem.get_text(strip=True)
+                if nom and len(nom) > 3:
+                    break
+        if not nom:
+            continue
+        
+        prix_elem = bloc.find('span', class_=re.compile(r'price', re.I))
+        if prix_elem:
+            texte = prix_elem.get_text()
+            prix = extraire_prix(texte, config["prix_pattern"])
+        else:
+            texte = bloc.get_text()
+            prix = extraire_prix(texte, config["prix_pattern"])
+        
+        if nom and prix and len(nom) > 5:
+            produits.append({'nom': nom[:80], 'prix': prix})
+    return produits
+
+def scraper_cubner(soup, config):
+    """Scraping spécifique pour Cubner"""
+    produits = []
+    for bloc in soup.find_all(['div', 'li'], class_=re.compile(r'product|item', re.I)):
+        nom = None
+        for selector in config["nom_selector"]:
+            elem = bloc.find(selector)
+            if elem:
+                nom = elem.get_text(strip=True)
+                if nom and len(nom) > 3:
+                    break
+        if not nom:
+            continue
+        
+        texte = bloc.get_text()
+        match = re.search(r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*),\s*(\d{2})?\s?[€&euro;]', texte)
+        if match:
+            prix = int(match.group(1).replace(' ', ''))
+        else:
+            prix = None
+        
+        if nom and prix and len(nom) > 5 and len(nom) < 100:
+            produits.append({'nom': nom[:80], 'prix': prix})
+    return produits
+
+def scraper_acm(soup, config):
+    """Scraping spécifique pour ACM (ignore les descriptions longues)"""
+    produits = []
+    for bloc in soup.find_all(['div', 'article'], class_=re.compile(r'product|item|produit', re.I)):
+        nom = None
+        for selector in config["nom_selector"]:
+            elem = bloc.find(selector)
+            if elem:
+                nom = elem.get_text(strip=True)
+                if nom and len(nom) > 3:
+                    break
+        if not nom:
+            continue
+        
+        # 🔧 IGNORER LES DESCRIPTIONS LONGUES
+        if len(nom) > 60 or any(mot in nom.lower() for mot in ['modèle', 'polyvalent', 'dimensions', 'idéal', 'particulièrement']):
+            continue
+        
+        texte = bloc.get_text()
+        prix = extraire_prix(texte, config["prix_pattern"])
+        
+        if nom and prix and len(nom) > 5:
+            produits.append({'nom': nom[:60], 'prix': prix})
+    return produits
+
+def scraper_standard(soup, config):
+    """Scraping standard pour les autres sites"""
+    produits = []
+    for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I)):
+        nom = None
+        for selector in config["nom_selector"]:
+            elem = bloc.find(selector)
+            if elem:
+                nom = elem.get_text(strip=True)
+                if nom and len(nom) > 3:
+                    break
+        if not nom:
+            continue
+        
+        texte = bloc.get_text()
+        prix = extraire_prix(texte, config["prix_pattern"])
+        
+        if nom and prix and len(nom) > 3:
+            produits.append({'nom': nom[:80], 'prix': prix})
+    return produits
 
 def scraper_rubrique(url, config):
-    """Scrape les produits depuis une page rubrique"""
-    produits = []
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Méthode 1 : Chercher par blocs
-        for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item|produit', re.I)):
-            nom = None
-            for selector in config["nom_selector"]:
-                elem = bloc.find(selector)
-                if elem:
-                    nom = elem.get_text(strip=True)
-                    if nom and len(nom) > 3:
-                        break
-            
-            # Nettoyer le nom : enlever les descriptions trop longues
-            if nom and (len(nom) > 100 or "modèle" in nom.lower() or "polyvalent" in nom.lower()):
-                continue
-            
-            texte = bloc.get_text()
-            prix = extraire_prix(texte, config["prix_pattern"])
-            
-            if nom and prix and len(nom) > 3:
-                produits.append({'nom': nom[:80], 'prix': prix})
-        
-        # Méthode 2 : Si pas assez de produits, chercher dans toute la page
-        if len(produits) < 2:
-            texte_page = soup.get_text()
-            prix = extraire_prix(texte_page, config["prix_pattern"])
-            if prix:
-                for titre in soup.find_all(config["nom_selector"]):
-                    nom = titre.get_text(strip=True)
-                    if nom and len(nom) > 5 and len(nom) < 100:
-                        if "modèle" not in nom.lower() and "polyvalent" not in nom.lower():
-                            produits.append({'nom': nom[:80], 'prix': prix})
+        # Choisir la fonction de scraping selon le site
+        scraping_type = config.get("type_scraping", "standard")
+        if scraping_type == "eurobox":
+            produits = scraper_eurobox(soup, config)
+        elif scraping_type == "cubner":
+            produits = scraper_cubner(soup, config)
+        elif scraping_type == "acm":
+            produits = scraper_acm(soup, config)
+        else:
+            produits = scraper_standard(soup, config)
         
         return produits
     except Exception as e:
@@ -168,7 +239,6 @@ def scraper_rubrique(url, config):
 
 # ==================== LECTURE DES PRIX EXISTANTS ====================
 def get_prix_existants(sheet):
-    """Récupère les prix existants dans le sheet"""
     prix_existants = {}
     try:
         data = sheet.get_all_values()
@@ -195,19 +265,14 @@ def get_prix_existants(sheet):
             if len(row) > max(indices.values()):
                 key = f"{row[indices['fournisseur']]}|{row[indices['region']]}|{row[indices['type']]}"
                 try:
-                    prix_existants[key] = {
-                        "prix": float(row[indices['prix']]),
-                        "row": row_idx
-                    }
+                    prix_existants[key] = {"prix": float(row[indices['prix']]), "row": row_idx}
                 except:
                     pass
     except Exception as e:
         print(f"   ⚠️ Erreur lecture existants: {e}")
-    
     return prix_existants
 
 def mettre_a_jour_prix_existant(sheet, row, nouveau_prix, timestamp):
-    """Met à jour le prix d'une ligne existante"""
     try:
         sheet.update_cell(row, 5, nouveau_prix)
         sheet.update_cell(row, 1, timestamp)
@@ -218,7 +283,6 @@ def mettre_a_jour_prix_existant(sheet, row, nouveau_prix, timestamp):
 
 # ==================== COLORATION EN JAUNE ====================
 def colorer_fournisseurs_manuels(sheet):
-    """Colore en jaune les fournisseurs à saisie manuelle"""
     try:
         data = sheet.get_all_values()
         if len(data) <= 1:
@@ -232,7 +296,6 @@ def colorer_fournisseurs_manuels(sheet):
                 break
         
         if not col_fournisseur:
-            print("   ❌ Colonne 'Fournisseur' non trouvée", flush=True)
             return
         
         yellow_format = {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.6}}
@@ -244,7 +307,7 @@ def colorer_fournisseurs_manuels(sheet):
                 sheet.format(f"{chr(64 + col_fournisseur)}{row}", yellow_format)
                 count += 1
         
-        print(f"   🟡 {count} fournisseurs colorés en jaune (mise à jour manuelle)", flush=True)
+        print(f"   🟡 {count} fournisseurs colorés en jaune", flush=True)
     except Exception as e:
         print(f"   ⚠️ Erreur coloration: {e}", flush=True)
 
@@ -273,7 +336,6 @@ def mettre_a_jour_prix():
             time.sleep(1)
         
         if tous_produits:
-            # Supprimer les doublons
             uniques = {}
             for p in tous_produits:
                 if p['nom'] not in uniques or p['prix'] < uniques[p['nom']]['prix']:
@@ -286,17 +348,8 @@ def mettre_a_jour_prix():
                     
                     if key not in prix_existants:
                         nouvelle_ligne = [
-                            timestamp,           # A - Timestamp
-                            fournisseur,         # B - Fournisseur
-                            region,              # C - Région
-                            produit['nom'],      # D - Type Container
-                            prix_actuel,         # E - Prix TTC
-                            0,                   # F - Livraison
-                            "",                  # G - Garantie
-                            "",                  # H - Délai
-                            fournisseur,         # I - Source
-                            0,                   # J - Note
-                            0                    # K - Variation %
+                            timestamp, fournisseur, region, produit['nom'],
+                            prix_actuel, 0, "", "", fournisseur, 0, 0
                         ]
                         nouvelles_lignes.append(nouvelle_ligne)
                         stats["nouveaux"] += 1
@@ -306,7 +359,7 @@ def mettre_a_jour_prix():
                             row = prix_existants[key]["row"]
                             if mettre_a_jour_prix_existant(sheet, row, prix_actuel, timestamp):
                                 stats["modifies"] += 1
-                                print(f"   📝 MAJ {produit['nom'][:50]} ({region}) : {ancien_prix}€ → {prix_actuel}€", flush=True)
+                                print(f"   📝 MAJ {produit['nom'][:40]} : {ancien_prix}€ → {prix_actuel}€", flush=True)
                         else:
                             stats["identiques"] += 1
             
@@ -314,24 +367,20 @@ def mettre_a_jour_prix():
         else:
             print(f"   ⚠️ Aucun produit trouvé", flush=True)
     
-    # Ajouter les nouvelles lignes avec gestion des erreurs 429
     if nouvelles_lignes:
         print(f"\n📝 Ajout de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
         for i, ligne in enumerate(nouvelles_lignes):
             if ajouter_avec_retry(sheet, ligne):
                 if (i + 1) % 10 == 0:
                     print(f"   {i + 1}/{len(nouvelles_lignes)} lignes ajoutées...", flush=True)
-            time.sleep(1)  # Pause d'1 seconde entre chaque ligne
-        
+            time.sleep(1)
         print(f"\n✅ {len(nouvelles_lignes)} nouveaux produits ajoutés", flush=True)
     
-    # Afficher le résumé
-    print(f"\n📊 RÉSUMÉ DES CHANGEMENTS:", flush=True)
-    print(f"   🆕 Nouveaux produits: {stats['nouveaux']}", flush=True)
-    print(f"   📝 Prix modifiés: {stats['modifies']}", flush=True)
-    print(f"   🔄 Prix identiques: {stats['identiques']}", flush=True)
+    print(f"\n📊 RÉSUMÉ:", flush=True)
+    print(f"   🆕 Nouveaux: {stats['nouveaux']}", flush=True)
+    print(f"   📝 Modifiés: {stats['modifies']}", flush=True)
+    print(f"   🔄 Identiques: {stats['identiques']}", flush=True)
     
-    # Colorer les fournisseurs manuels
     colorer_fournisseurs_manuels(sheet)
 
 # ==================== LANCER ====================
@@ -343,8 +392,7 @@ if __name__ == "__main__":
     
     try:
         mettre_a_jour_prix()
-        print("\n✅ Script terminé avec succès", flush=True)
+        print("\n✅ Script terminé", flush=True)
     except Exception as e:
         print(f"\n❌ Erreur fatale: {e}", flush=True)
-        import traceback
         traceback.print_exc()
