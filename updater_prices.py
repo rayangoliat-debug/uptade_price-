@@ -114,6 +114,32 @@ def extraire_prix(texte, pattern):
     prix_propre = re.sub(r'[^\d]', '', prix_brut)
     return int(prix_propre) if prix_propre else None
 
+def est_un_produit_valide(nom):
+    """Vérifie si le nom correspond à un vrai produit (pas une FAQ ou description)"""
+    if len(nom) < 5 or len(nom) > 80:
+        return False
+    
+    mots_interdits = [
+        "qu'est-ce", "pourquoi", "comment", "quelle", "quels",
+        "faq", "questions", "avantages", "dimensions", "caractéristiques",
+        "livraison", "installation", "préparer", "déchargement", "certificat",
+        "entretien", "durée de vie", "permis", "étanchéité", "plancher",
+        "portes", "normes", "qualité", "service", "expertise", "stock",
+        "différence", "choisir", "besoin", "tarifs", "pourquoi", "comment"
+    ]
+    
+    nom_lower = nom.lower()
+    for mot in mots_interdits:
+        if mot in nom_lower:
+            return False
+    
+    # Doit contenir un mot-clé de produit
+    mots_cles = ["pieds", "container", "conteneur", "box", "module", "dry", "hc", "high cube", "stockage", "frigo", "open", "flat", "rack"]
+    if not any(mot in nom_lower for mot in mots_cles):
+        return False
+    
+    return True
+
 def scraper_rubrique(url, config):
     produits = []
     try:
@@ -130,22 +156,23 @@ def scraper_rubrique(url, config):
                     if nom and len(nom) > 3:
                         break
             
-            if nom and (len(nom) > 100 or "modèle" in nom.lower() or "polyvalent" in nom.lower()):
+            if not nom or not est_un_produit_valide(nom):
                 continue
             
             texte = bloc.get_text()
             prix = extraire_prix(texte, config["prix_pattern"])
             
-            if nom and prix and len(nom) > 3:
+            if prix and prix > 0:
                 produits.append({'nom': nom[:80], 'prix': prix})
         
+        # Méthode alternative : chercher les prix dans la page
         if len(produits) < 2:
             texte_page = soup.get_text()
             prix = extraire_prix(texte_page, config["prix_pattern"])
             if prix:
                 for titre in soup.find_all(config["nom_selector"]):
                     nom = titre.get_text(strip=True)
-                    if nom and 5 < len(nom) < 100 and "modèle" not in nom.lower() and "polyvalent" not in nom.lower():
+                    if nom and est_un_produit_valide(nom):
                         produits.append({'nom': nom[:80], 'prix': prix})
         
         return produits
