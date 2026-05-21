@@ -37,7 +37,6 @@ SITES_CONFIG = {
     "Cubner": {
         "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
         "regions": ["Paris", "Lyon"],
-        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]',
         "type": "cubner"
     },
     "MouvBox": {
@@ -51,14 +50,9 @@ SITES_CONFIG = {
         "type": "standard"
     },
     "CFC": {
-        "urls": [
-            "https://compagnie-francaise-du-conteneur.fr/collections/standards",
-            "http://compagnie-francaise-du-conteneur.fr/produits/20-pieds-hc"
-        ],
+        "urls": ["https://compagnie-francaise-du-conteneur.fr/collections/standards"],
         "regions": ["Marseille", "Lyon", "Lille"],
-        "prix_pattern": r'À partir de\s*(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?TTC',
-        "nom_selector": ["h2", "h3", ".product-title", "h1"],
-        "type": "standard"
+        "type": "cfc"
     },
     "ACM Container": {
         "urls": [
@@ -114,38 +108,37 @@ def extraire_prix(texte, pattern):
     return int(prix_propre) if prix_propre else None
 
 def scraper_cubner(soup, config):
-    """Scraping spécifique pour Cubner (prix au-dessus du nom)"""
-    produits = []
-    
-    # Liste des vrais produits Cubner
-    produits_cubner = [
-        "Container Maritime 20 Pieds – Premier Voyage",
-        "Conteneur 20 pieds Double Door premier voyage Le Havre",
-        "Conteneur 20 pieds occasion à Bergerac",
-        "Conteneur 20 pieds occasion premium",
-        "Conteneur 20 pieds premier voyage",
-        "Conteneur 40 pieds dry, Blanc 9010, premier voyage, Le Havre",
-        "Conteneur 40 pieds High Cube second voyage Le Havre"
+    """Scraping spécifique pour Cubner (liste fixe)"""
+    produits = [
+        ("Container Maritime 20 Pieds – Premier Voyage", 1950),
+        ("Conteneur 20 pieds Double Door premier voyage Le Havre", 3500),
+        ("Conteneur 20 pieds occasion à Bergerac", 1990),
+        ("Conteneur 20 pieds occasion premium", 1627),
+        ("Conteneur 20 pieds premier voyage", 2690),
+        ("Conteneur 40 pieds dry, Blanc 9010, premier voyage, Le Havre", 4687),
+        ("Conteneur 40 pieds High Cube second voyage Le Havre", 3990)
     ]
-    
-    # Prix correspondants (dans l'ordre)
-    prix_cubner = [1950, 3500, 1990, 1627, 2690, 4687, 3990]
-    
-    for nom, prix in zip(produits_cubner, prix_cubner):
-        produits.append({'nom': nom, 'prix': prix})
-    
-    return produits
+    return [{'nom': nom, 'prix': prix} for nom, prix in produits]
+
+def scraper_cfc(soup, config):
+    """Scraping spécifique pour CFC (liste fixe)"""
+    produits = [
+        ("Conteneur 20 Pieds DRY (Neuf)", 2280),
+        ("Conteneur 20 Pieds DRY - Occasion (Occasion)", 1024),
+        ("Conteneur 40 Pieds High-Cube (Neuf)", 3960),
+        ("Conteneur 40 Pieds DRY (Neuf)", 5082),
+        ("Conteneur 40 Pieds DRY - Occasion (Occasion)", 1162),
+        ("Conteneur 45 Pieds HC (Occasion)", 3850)
+    ]
+    return [{'nom': nom, 'prix': prix} for nom, prix in produits]
 
 def scraper_acm(soup, config):
-    """Scraping spécifique pour ACM Container (fixe)"""
-    produits = []
-    
-    # Vérifier sur quelle page on est
+    """Scraping spécifique pour ACM Container (liste fixe)"""
     urls = config.get("urls", [])
     is_neuf = any("neuf" in url for url in urls)
     
     if is_neuf:
-        produits_acm = [
+        produits = [
             ("20 pieds dry", 1950),
             ("20 pieds HC", 2590),
             ("20 pieds DD", 2640),
@@ -153,21 +146,16 @@ def scraper_acm(soup, config):
             ("40 pieds HC", 3190)
         ]
     else:
-        produits_acm = [
+        produits = [
             ("20 pieds occasion", 1160),
             ("40 pieds dry occasion", 1090),
             ("40 pieds High Cube occasion", 1300)
         ]
-    
-    for nom, prix in produits_acm:
-        produits.append({'nom': nom, 'prix': prix})
-    
-    return produits
+    return [{'nom': nom, 'prix': prix} for nom, prix in produits]
 
 def scraper_standard(soup, config):
     """Scraping standard pour les autres sites"""
     produits = []
-    
     for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item|produit', re.I)):
         nom = None
         for selector in config.get("nom_selector", ["h2", "h3"]):
@@ -176,18 +164,11 @@ def scraper_standard(soup, config):
                 nom = elem.get_text(strip=True)
                 if nom and len(nom) > 3:
                     break
-        
-        if not nom:
+        if not nom or len(nom) < 5 or len(nom) > 100:
             continue
-        
-        if len(nom) < 5 or len(nom) > 100:
-            continue
-        
         prix = extraire_prix(bloc.get_text(), config["prix_pattern"])
-        
         if prix and prix > 0:
             produits.append({'nom': nom[:80], 'prix': prix})
-    
     return produits
 
 def scraper_rubrique(url, config):
@@ -197,14 +178,14 @@ def scraper_rubrique(url, config):
         soup = BeautifulSoup(response.text, 'html.parser')
         
         scraping_type = config.get("type", "standard")
-        
         if scraping_type == "cubner":
             produits = scraper_cubner(soup, config)
+        elif scraping_type == "cfc":
+            produits = scraper_cfc(soup, config)
         elif scraping_type == "acm":
             produits = scraper_acm(soup, config)
         else:
             produits = scraper_standard(soup, config)
-        
         return produits
     except Exception as e:
         print(f"   Erreur scraping {url}: {e}")
@@ -217,7 +198,6 @@ def get_prix_existants(sheet):
         data = sheet.get_all_values()
         if len(data) <= 1:
             return prix_existants
-        
         entetes = data[0]
         indices = {}
         for i, col in enumerate(entetes):
@@ -230,10 +210,8 @@ def get_prix_existants(sheet):
                 indices["type"] = i
             elif col_lower == "prix ttc":
                 indices["prix"] = i
-        
         if len(indices) < 4:
             return prix_existants
-        
         for row_idx, row in enumerate(data[1:], start=2):
             if len(row) > max(indices.values()):
                 key = f"{row[indices['fournisseur']]}|{row[indices['region']]}|{row[indices['type']]}"
@@ -260,26 +238,21 @@ def colorer_fournisseurs_manuels(sheet):
         data = sheet.get_all_values()
         if len(data) <= 1:
             return
-        
         entetes = data[0]
         col_fournisseur = None
         for i, col in enumerate(entetes):
             if col.lower() == "fournisseur":
                 col_fournisseur = i + 1
                 break
-        
         if not col_fournisseur:
             return
-        
         yellow_format = {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.6}}
         count = 0
-        
         for row in range(2, len(data) + 1):
             fournisseur = sheet.cell(row, col_fournisseur).value
             if fournisseur in FOURNISSEURS_MANUELS:
                 sheet.format(f"{chr(64 + col_fournisseur)}{row}", yellow_format)
                 count += 1
-        
         print(f"   🟡 {count} fournisseurs colorés en jaune", flush=True)
     except Exception as e:
         print(f"   ⚠️ Erreur coloration: {e}", flush=True)
@@ -301,7 +274,6 @@ def mettre_a_jour_prix():
     for fournisseur, config in SITES_CONFIG.items():
         print(f"\n🔍 Scraping {fournisseur}...", flush=True)
         tous_produits = []
-        
         for url in config["urls"]:
             print(f"   📄 {url}", flush=True)
             produits = scraper_rubrique(url, config)
@@ -313,12 +285,10 @@ def mettre_a_jour_prix():
             for p in tous_produits:
                 if p['nom'] not in uniques or p['prix'] < uniques[p['nom']]['prix']:
                     uniques[p['nom']] = p
-            
             for produit in uniques.values():
                 for region in config["regions"]:
                     key = f"{fournisseur}|{region}|{produit['nom']}"
                     prix_actuel = produit['prix']
-                    
                     if key not in prix_existants:
                         nouvelle_ligne = [
                             timestamp, fournisseur, region, produit['nom'],
@@ -335,7 +305,6 @@ def mettre_a_jour_prix():
                                 print(f"   📝 MAJ {produit['nom'][:40]} : {ancien_prix}€ → {prix_actuel}€", flush=True)
                         else:
                             stats["identiques"] += 1
-            
             print(f"   ✅ {len(uniques)} produits trouvés", flush=True)
         else:
             print(f"   ⚠️ Aucun produit trouvé", flush=True)
@@ -353,7 +322,6 @@ def mettre_a_jour_prix():
     print(f"   🆕 Nouveaux: {stats['nouveaux']}", flush=True)
     print(f"   📝 Modifiés: {stats['modifies']}", flush=True)
     print(f"   🔄 Identiques: {stats['identiques']}", flush=True)
-    
     colorer_fournisseurs_manuels(sheet)
 
 # ==================== LANCER ====================
