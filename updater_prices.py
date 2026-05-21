@@ -22,8 +22,7 @@ SITES_CONFIG = {
     "Box'Innov": {
         "urls": ["https://www.boxinnov.com/conteneur-maritime/"],
         "regions": ["Lyon", "Nantes", "Marseille"],
-        "type_prix": "unitaire",
-        "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]',
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
     "Eurobox": {
@@ -33,15 +32,13 @@ SITES_CONFIG = {
             "https://eurobox.fr/categorie-produit/containers/containers-de-stockage/"
         ],
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
-        "type_prix": "unitaire",
-        "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?),\s*(\d{2})?\s?[€&euro;]\s?HT',
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*),\s*(\d{2})?\s?[€&euro;]\s?HT',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
     "Cubner": {
         "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
         "regions": ["Paris", "Lyon"],
-        "type_prix": "unitaire",
-        "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?),\s*(\d{2})?\s?[€&euro;]',
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*),\s*(\d{2})?\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
     "MouvBox": {
@@ -50,8 +47,7 @@ SITES_CONFIG = {
             "https://mouvbox-france.com/categorie-produit/destockage/"
         ],
         "regions": ["Toulouse", "Perpignan"],
-        "type_prix": "unitaire",
-        "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]\s?HT',
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
     "CFC": {
@@ -60,8 +56,7 @@ SITES_CONFIG = {
             "http://compagnie-francaise-du-conteneur.fr/produits/20-pieds-hc"
         ],
         "regions": ["Marseille", "Lyon", "Lille"],
-        "type_prix": "unitaire",
-        "prix_pattern": r'À partir de\s*(\d{1,3}(?:[\s]?\d{3})?),\s*(\d{2})?\s?[€&euro;]\s?TTC',
+        "prix_pattern": r'À partir de\s*(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*),\s*(\d{2})?\s?[€&euro;]\s?TTC',
         "nom_selector": ["h2", "h3", ".product-title", "h1"],
     },
     "ACM Container": {
@@ -70,8 +65,7 @@ SITES_CONFIG = {
             "https://acm-container.fr/conteneurs-maritimes/occasion/"
         ],
         "regions": ["Marseille"],
-        "type_prix": "unitaire",
-        "prix_pattern": r'(\d{1,3}(?:[\s]?\d{3})?)\s?[€&euro;]\s?HT',
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
         "nom_selector": ["h2", "h3", ".product-title"],
     }
 }
@@ -95,7 +89,39 @@ def connecter_google_sheets():
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
     return gspread.authorize(creds)
 
+# ==================== GESTION DES ERREURS 429 ====================
+def ajouter_avec_retry(sheet, ligne, max_retries=3):
+    """Ajoute une ligne avec réessai en cas d'erreur 429 (quota dépassé)"""
+    for i in range(max_retries):
+        try:
+            sheet.append_row(ligne, value_input_option='USER_ENTERED')
+            return True
+        except Exception as e:
+            if "429" in str(e) and i < max_retries - 1:
+                wait = (i + 1) * 5  # 5, 10, 15 secondes
+                print(f"   ⏳ Quota dépassé, pause de {wait}s avant réessai...", flush=True)
+                time.sleep(wait)
+            else:
+                print(f"   ❌ Erreur: {e}", flush=True)
+                return False
+    return False
+
 # ==================== FONCTIONS DE SCRAPING ====================
+def extraire_prix(texte, pattern):
+    """Extrait et nettoie le prix correctement"""
+    match = re.search(pattern, texte, re.I)
+    if not match:
+        return None
+    
+    prix_brut = match.group(1)
+    
+    # Supprimer TOUS les caractères non numériques
+    prix_propre = re.sub(r'[^\d]', '', prix_brut)
+    
+    if prix_propre:
+        return int(prix_propre)
+    return None
+
 def scraper_rubrique(url, config):
     """Scrape les produits depuis une page rubrique"""
     produits = []
@@ -114,25 +140,20 @@ def scraper_rubrique(url, config):
                         break
             
             texte = bloc.get_text()
-            match = re.search(config["prix_pattern"], texte, re.I)
-            if match:
-                # 🔧 CORRECTION : Extraction et nettoyage correct du prix
-                if isinstance(match.group(1), str):
-                    prix_brut = match.group(1)
-                else:
-                    prix_brut = match.group(1)[0] if isinstance(match.group(1), tuple) else str(match.group(1))
-                
-                # Nettoyer : garder uniquement les chiffres
-                prix_propre = re.sub(r'[^\d]', '', prix_brut)
-                if prix_propre:
-                    prix = int(prix_propre)
-                else:
-                    prix = None
-            else:
-                prix = None
+            prix = extraire_prix(texte, config["prix_pattern"])
             
             if nom and prix and len(nom) > 3:
                 produits.append({'nom': nom[:100], 'prix': prix})
+        
+        # Si pas assez de produits, chercher dans toute la page
+        if len(produits) < 2:
+            texte_page = soup.get_text()
+            prix = extraire_prix(texte_page, config["prix_pattern"])
+            if prix:
+                for titre in soup.find_all(config["nom_selector"]):
+                    nom = titre.get_text(strip=True)
+                    if nom and len(nom) > 5:
+                        produits.append({'nom': nom[:100], 'prix': prix})
         
         return produits
     except Exception as e:
@@ -285,16 +306,14 @@ def mettre_a_jour_prix():
         else:
             print(f"   ⚠️ Aucun produit trouvé", flush=True)
     
+    # Ajouter les nouvelles lignes AVEC gestion des erreurs 429
     if nouvelles_lignes:
         print(f"\n📝 Ajout de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
         for i, ligne in enumerate(nouvelles_lignes):
-            try:
-                sheet.append_row(ligne, value_input_option='USER_ENTERED')
+            if ajouter_avec_retry(sheet, ligne):
                 if (i + 1) % 10 == 0:
                     print(f"   {i + 1}/{len(nouvelles_lignes)} lignes ajoutées...", flush=True)
-                time.sleep(0.5)
-            except Exception as e:
-                print(f"   ⚠️ Erreur ligne {i+1}: {e}", flush=True)
+            time.sleep(1)  # Pause d'1 seconde entre chaque ligne
         
         print(f"\n✅ {len(nouvelles_lignes)} nouveaux produits ajoutés", flush=True)
     
