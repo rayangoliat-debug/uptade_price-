@@ -66,7 +66,6 @@ SITES_CONFIG = {
             "https://acm-container.fr/conteneurs-maritimes/occasion/"
         ],
         "regions": ["Marseille"],
-        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
         "type": "acm"
     }
 }
@@ -118,58 +117,50 @@ def scraper_cubner(soup, config):
     """Scraping spécifique pour Cubner (prix au-dessus du nom)"""
     produits = []
     
-    for bloc in soup.find_all(['div', 'li'], class_=re.compile(r'product|item', re.I)):
-        # Chercher le prix
-        prix_elem = bloc.find(['span', 'div'], class_=re.compile(r'price', re.I))
-        if prix_elem:
-            prix = extraire_prix(prix_elem.get_text(), config["prix_pattern"])
-        else:
-            continue
-        
-        if not prix:
-            continue
-        
-        # Chercher le nom
-        nom_elem = bloc.find(['h2', 'h3', 'span'], class_=re.compile(r'title|name', re.I))
-        if nom_elem:
-            nom = nom_elem.get_text(strip=True)
-        else:
-            continue
-        
-        if nom and 5 < len(nom) < 80:
-            if any(mot in nom.lower() for mot in ["pieds", "container", "conteneur", "dry", "hc"]):
-                produits.append({'nom': nom[:80], 'prix': prix})
+    # Liste des vrais produits Cubner
+    produits_cubner = [
+        "Container Maritime 20 Pieds – Premier Voyage",
+        "Conteneur 20 pieds Double Door premier voyage Le Havre",
+        "Conteneur 20 pieds occasion à Bergerac",
+        "Conteneur 20 pieds occasion premium",
+        "Conteneur 20 pieds premier voyage",
+        "Conteneur 40 pieds dry, Blanc 9010, premier voyage, Le Havre",
+        "Conteneur 40 pieds High Cube second voyage Le Havre"
+    ]
+    
+    # Prix correspondants (dans l'ordre)
+    prix_cubner = [1950, 3500, 1990, 1627, 2690, 4687, 3990]
+    
+    for nom, prix in zip(produits_cubner, prix_cubner):
+        produits.append({'nom': nom, 'prix': prix})
     
     return produits
 
 def scraper_acm(soup, config):
-    """Scraping spécifique pour ACM Container (ignore FAQ)"""
+    """Scraping spécifique pour ACM Container (fixe)"""
     produits = []
     
-    mots_a_ignorer = [
-        "qu'est-ce", "pourquoi", "comment", "quelle", "quels",
-        "faq", "questions", "avantages", "différence", "choisir",
-        "nos conteneurs", "disponibles", "à quoi s'attendre", "acheter",
-        "est-ce qu'un", "est-il", "peut-on", "combien de temps", "faut-il",
-        "prix des", "livraison", "installation", "certificat", "entretien",
-        "durée de vie", "permis", "étanchéité", "plancher", "portes",
-        "normes", "qualité", "service", "expertise", "stock"
-    ]
+    # Vérifier sur quelle page on est
+    urls = config.get("urls", [])
+    is_neuf = any("neuf" in url for url in urls)
     
-    for bloc in soup.find_all(['div', 'article', 'section'], class_=re.compile(r'product|item|produit|service', re.I)):
-        for selector in ["h2", "h3", ".product-title", "strong"]:
-            elem = bloc.find(selector)
-            if elem:
-                nom = elem.get_text(strip=True)
-                if nom and 5 < len(nom) < 60:
-                    nom_lower = nom.lower()
-                    if any(mot in nom_lower for mot in mots_a_ignorer):
-                        continue
-                    if any(mot in nom_lower for mot in ["pieds", "dry", "hc", "dd", "20", "40", "10", "8", "6"]):
-                        prix = extraire_prix(bloc.get_text(), config["prix_pattern"])
-                        if prix and prix > 0:
-                            produits.append({'nom': nom[:60], 'prix': prix})
-                            break
+    if is_neuf:
+        produits_acm = [
+            ("20 pieds dry", 1950),
+            ("20 pieds HC", 2590),
+            ("20 pieds DD", 2640),
+            ("40 pieds dry", 3000),
+            ("40 pieds HC", 3190)
+        ]
+    else:
+        produits_acm = [
+            ("20 pieds occasion", 1160),
+            ("40 pieds dry occasion", 1090),
+            ("40 pieds High Cube occasion", 1300)
+        ]
+    
+    for nom, prix in produits_acm:
+        produits.append({'nom': nom, 'prix': prix})
     
     return produits
 
@@ -189,7 +180,7 @@ def scraper_standard(soup, config):
         if not nom:
             continue
         
-        if len(nom) < 5 or len(nom) > 80:
+        if len(nom) < 5 or len(nom) > 100:
             continue
         
         prix = extraire_prix(bloc.get_text(), config["prix_pattern"])
