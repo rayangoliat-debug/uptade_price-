@@ -9,21 +9,19 @@ import json
 import time
 import sys
 
-# Forcer l'affichage immédiat
 sys.stdout.reconfigure(line_buffering=True)
 
 # ==================== CONFIGURATION ====================
-# 🔧 REMPLACE PAR L'ID DE TON GOOGLE SHEETS 🔧
 SHEET_ID = "1kdZFXQKBo2Hom880XpuvtksrsVo3nswmOaL4Cc-hv1Y"
 FEUILLE_HISTORIQUE = "HistoriquePrix"
 
-# Configuration des sites à scraper
 SITES_CONFIG = {
     "Box'Innov": {
         "urls": ["https://www.boxinnov.com/conteneur-maritime/"],
         "regions": ["Lyon", "Nantes", "Marseille"],
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]',
         "nom_selector": ["h2", "h3", ".product-title"],
+        "type": "standard"
     },
     "Eurobox": {
         "urls": [
@@ -34,12 +32,13 @@ SITES_CONFIG = {
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
         "nom_selector": ["h2", "h3", ".product-title"],
+        "type": "standard"
     },
     "Cubner": {
         "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
         "regions": ["Paris", "Lyon"],
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]',
-        "nom_selector": ["h2", "h3", ".product-title"],
+        "type": "cubner"
     },
     "MouvBox": {
         "urls": [
@@ -49,6 +48,7 @@ SITES_CONFIG = {
         "regions": ["Toulouse", "Perpignan"],
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
         "nom_selector": ["h2", "h3", ".product-title"],
+        "type": "standard"
     },
     "CFC": {
         "urls": [
@@ -58,6 +58,7 @@ SITES_CONFIG = {
         "regions": ["Marseille", "Lyon", "Lille"],
         "prix_pattern": r'À partir de\s*(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?TTC',
         "nom_selector": ["h2", "h3", ".product-title", "h1"],
+        "type": "standard"
     },
     "ACM Container": {
         "urls": [
@@ -66,11 +67,10 @@ SITES_CONFIG = {
         ],
         "regions": ["Marseille"],
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
-        "nom_selector": ["h2", "h3", ".product-title"],
+        "type": "acm"
     }
 }
 
-# ==================== FOURNISSEURS MANUELS (COLORÉS EN JAUNE) ====================
 FOURNISSEURS_MANUELS = [
     "Nord Container", "2M Containers", "Easy Container", "BBox Container",
     "Méditerranée Containers", "ABC Container", "Est Container", "Ouest Container",
@@ -78,7 +78,7 @@ FOURNISSEURS_MANUELS = [
     "Bluetainer", "ContainerZ", "Sea Box Company"
 ]
 
-# ==================== CONNEXION GOOGLE SHEETS ====================
+# ==================== CONNEXION ====================
 def connecter_google_sheets():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
@@ -89,7 +89,7 @@ def connecter_google_sheets():
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
     return gspread.authorize(creds)
 
-# ==================== GESTION DES ERREURS 429 ====================
+# ==================== GESTION DES ERREURS ====================
 def ajouter_avec_retry(sheet, ligne, max_retries=3):
     for i in range(max_retries):
         try:
@@ -114,66 +114,105 @@ def extraire_prix(texte, pattern):
     prix_propre = re.sub(r'[^\d]', '', prix_brut)
     return int(prix_propre) if prix_propre else None
 
-def est_un_produit_valide(nom):
-    """Vérifie si le nom correspond à un vrai produit (pas une FAQ ou description)"""
-    if len(nom) < 5 or len(nom) > 80:
-        return False
+def scraper_cubner(soup, config):
+    """Scraping spécifique pour Cubner (prix au-dessus du nom)"""
+    produits = []
     
-    mots_interdits = [
+    for bloc in soup.find_all(['div', 'li'], class_=re.compile(r'product|item', re.I)):
+        # Chercher le prix
+        prix_elem = bloc.find(['span', 'div'], class_=re.compile(r'price', re.I))
+        if prix_elem:
+            prix = extraire_prix(prix_elem.get_text(), config["prix_pattern"])
+        else:
+            continue
+        
+        if not prix:
+            continue
+        
+        # Chercher le nom
+        nom_elem = bloc.find(['h2', 'h3', 'span'], class_=re.compile(r'title|name', re.I))
+        if nom_elem:
+            nom = nom_elem.get_text(strip=True)
+        else:
+            continue
+        
+        if nom and 5 < len(nom) < 80:
+            if any(mot in nom.lower() for mot in ["pieds", "container", "conteneur", "dry", "hc"]):
+                produits.append({'nom': nom[:80], 'prix': prix})
+    
+    return produits
+
+def scraper_acm(soup, config):
+    """Scraping spécifique pour ACM Container (ignore FAQ)"""
+    produits = []
+    
+    mots_a_ignorer = [
         "qu'est-ce", "pourquoi", "comment", "quelle", "quels",
-        "faq", "questions", "avantages", "dimensions", "caractéristiques",
-        "livraison", "installation", "préparer", "déchargement", "certificat",
-        "entretien", "durée de vie", "permis", "étanchéité", "plancher",
-        "portes", "normes", "qualité", "service", "expertise", "stock",
-        "différence", "choisir", "besoin", "tarifs", "pourquoi", "comment"
+        "faq", "questions", "avantages", "différence", "choisir",
+        "nos conteneurs", "disponibles", "à quoi s'attendre", "acheter",
+        "est-ce qu'un", "est-il", "peut-on", "combien de temps", "faut-il",
+        "prix des", "livraison", "installation", "certificat", "entretien",
+        "durée de vie", "permis", "étanchéité", "plancher", "portes",
+        "normes", "qualité", "service", "expertise", "stock"
     ]
     
-    nom_lower = nom.lower()
-    for mot in mots_interdits:
-        if mot in nom_lower:
-            return False
+    for bloc in soup.find_all(['div', 'article', 'section'], class_=re.compile(r'product|item|produit|service', re.I)):
+        for selector in ["h2", "h3", ".product-title", "strong"]:
+            elem = bloc.find(selector)
+            if elem:
+                nom = elem.get_text(strip=True)
+                if nom and 5 < len(nom) < 60:
+                    nom_lower = nom.lower()
+                    if any(mot in nom_lower for mot in mots_a_ignorer):
+                        continue
+                    if any(mot in nom_lower for mot in ["pieds", "dry", "hc", "dd", "20", "40", "10", "8", "6"]):
+                        prix = extraire_prix(bloc.get_text(), config["prix_pattern"])
+                        if prix and prix > 0:
+                            produits.append({'nom': nom[:60], 'prix': prix})
+                            break
     
-    # Doit contenir un mot-clé de produit
-    mots_cles = ["pieds", "container", "conteneur", "box", "module", "dry", "hc", "high cube", "stockage", "frigo", "open", "flat", "rack"]
-    if not any(mot in nom_lower for mot in mots_cles):
-        return False
+    return produits
+
+def scraper_standard(soup, config):
+    """Scraping standard pour les autres sites"""
+    produits = []
     
-    return True
+    for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item|produit', re.I)):
+        nom = None
+        for selector in config.get("nom_selector", ["h2", "h3"]):
+            elem = bloc.find(selector)
+            if elem:
+                nom = elem.get_text(strip=True)
+                if nom and len(nom) > 3:
+                    break
+        
+        if not nom:
+            continue
+        
+        if len(nom) < 5 or len(nom) > 80:
+            continue
+        
+        prix = extraire_prix(bloc.get_text(), config["prix_pattern"])
+        
+        if prix and prix > 0:
+            produits.append({'nom': nom[:80], 'prix': prix})
+    
+    return produits
 
 def scraper_rubrique(url, config):
-    produits = []
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item|produit', re.I)):
-            nom = None
-            for selector in config["nom_selector"]:
-                elem = bloc.find(selector)
-                if elem:
-                    nom = elem.get_text(strip=True)
-                    if nom and len(nom) > 3:
-                        break
-            
-            if not nom or not est_un_produit_valide(nom):
-                continue
-            
-            texte = bloc.get_text()
-            prix = extraire_prix(texte, config["prix_pattern"])
-            
-            if prix and prix > 0:
-                produits.append({'nom': nom[:80], 'prix': prix})
+        scraping_type = config.get("type", "standard")
         
-        # Méthode alternative : chercher les prix dans la page
-        if len(produits) < 2:
-            texte_page = soup.get_text()
-            prix = extraire_prix(texte_page, config["prix_pattern"])
-            if prix:
-                for titre in soup.find_all(config["nom_selector"]):
-                    nom = titre.get_text(strip=True)
-                    if nom and est_un_produit_valide(nom):
-                        produits.append({'nom': nom[:80], 'prix': prix})
+        if scraping_type == "cubner":
+            produits = scraper_cubner(soup, config)
+        elif scraping_type == "acm":
+            produits = scraper_acm(soup, config)
+        else:
+            produits = scraper_standard(soup, config)
         
         return produits
     except Exception as e:
@@ -224,7 +263,7 @@ def mettre_a_jour_prix_existant(sheet, row, nouveau_prix, timestamp):
         print(f"   ⚠️ Erreur mise à jour ligne {row}: {e}")
         return False
 
-# ==================== COLORATION EN JAUNE ====================
+# ==================== COLORATION ====================
 def colorer_fournisseurs_manuels(sheet):
     try:
         data = sheet.get_all_values()
@@ -239,7 +278,6 @@ def colorer_fournisseurs_manuels(sheet):
                 break
         
         if not col_fournisseur:
-            print("   ❌ Colonne 'Fournisseur' non trouvée", flush=True)
             return
         
         yellow_format = {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.6}}
