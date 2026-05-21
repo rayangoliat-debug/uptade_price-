@@ -104,7 +104,6 @@ def scraper_rubrique(url, config):
         response = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Méthode : chercher les blocs de produits
         for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I)):
             nom = None
             for selector in config["nom_selector"]:
@@ -117,26 +116,23 @@ def scraper_rubrique(url, config):
             texte = bloc.get_text()
             match = re.search(config["prix_pattern"], texte, re.I)
             if match:
-                prix = match.group(1).replace(' ', '')
-                # Nettoyer le prix (enlever les espaces et convertir)
-                prix = int(re.sub(r'[^\d]', '', prix))
+                # 🔧 CORRECTION : Extraction et nettoyage correct du prix
+                if isinstance(match.group(1), str):
+                    prix_brut = match.group(1)
+                else:
+                    prix_brut = match.group(1)[0] if isinstance(match.group(1), tuple) else str(match.group(1))
+                
+                # Nettoyer : garder uniquement les chiffres
+                prix_propre = re.sub(r'[^\d]', '', prix_brut)
+                if prix_propre:
+                    prix = int(prix_propre)
+                else:
+                    prix = None
             else:
                 prix = None
             
             if nom and prix and len(nom) > 3:
                 produits.append({'nom': nom[:100], 'prix': prix})
-        
-        # Si pas de produits trouvés, chercher dans toute la page
-        if len(produits) < 2:
-            texte_page = soup.get_text()
-            matches = re.findall(config["prix_pattern"], texte_page, re.I)
-            if matches:
-                for titre in soup.find_all(config["nom_selector"]):
-                    nom = titre.get_text(strip=True)
-                    if nom and len(nom) > 5:
-                        prix = matches[0].replace(' ', '') if isinstance(matches[0], str) else matches[0][0]
-                        prix = int(re.sub(r'[^\d]', '', str(prix)))
-                        produits.append({'nom': nom[:100], 'prix': prix})
         
         return produits
     except Exception as e:
@@ -231,7 +227,6 @@ def mettre_a_jour_prix():
     client = connecter_google_sheets()
     sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
     
-    # Récupérer les prix existants
     prix_existants = get_prix_existants(sheet)
     print(f"📊 {len(prix_existants)} prix existants chargés", flush=True)
     
@@ -250,7 +245,6 @@ def mettre_a_jour_prix():
             time.sleep(1)
         
         if tous_produits:
-            # Supprimer les doublons
             uniques = {}
             for p in tous_produits:
                 if p['nom'] not in uniques or p['prix'] < uniques[p['nom']]['prix']:
@@ -291,7 +285,6 @@ def mettre_a_jour_prix():
         else:
             print(f"   ⚠️ Aucun produit trouvé", flush=True)
     
-    # Ajouter les nouvelles lignes
     if nouvelles_lignes:
         print(f"\n📝 Ajout de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
         for i, ligne in enumerate(nouvelles_lignes):
@@ -305,7 +298,6 @@ def mettre_a_jour_prix():
         
         print(f"\n✅ {len(nouvelles_lignes)} nouveaux produits ajoutés", flush=True)
     
-    # Afficher le résumé
     print(f"\n📊 RÉSUMÉ DES CHANGEMENTS:", flush=True)
     print(f"   🆕 Nouveaux produits: {stats['nouveaux']}", flush=True)
     print(f"   📝 Prix modifiés: {stats['modifies']}", flush=True)
