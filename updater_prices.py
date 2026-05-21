@@ -32,7 +32,7 @@ SITES_CONFIG = {
             "https://eurobox.fr/categorie-produit/containers/containers-de-stockage/"
         ],
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
-        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*),\s*(\d{2})?\s?[€&euro;]\s?HT',
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
         "nom_selector": ["h2", "h3", ".product-title"],
     },
     "Cubner": {
@@ -66,11 +66,11 @@ SITES_CONFIG = {
         ],
         "regions": ["Marseille"],
         "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
-        "nom_selector": ["h2", "h3", ".product-title"],
+        "nom_selector": ["h1", "h2", "h3", ".product-title"],
     }
 }
 
-# Fournisseurs manuels (colorés en jaune)
+# ==================== FOURNISSEURS MANUELS (COLORÉS EN JAUNE) ====================
 FOURNISSEURS_MANUELS = [
     "Nord Container", "2M Containers", "Easy Container", "BBox Container",
     "Méditerranée Containers", "ABC Container", "Est Container", "Ouest Container",
@@ -130,7 +130,8 @@ def scraper_rubrique(url, config):
         response = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item', re.I)):
+        # Méthode 1 : Chercher par blocs
+        for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item|produit', re.I)):
             nom = None
             for selector in config["nom_selector"]:
                 elem = bloc.find(selector)
@@ -139,21 +140,26 @@ def scraper_rubrique(url, config):
                     if nom and len(nom) > 3:
                         break
             
+            # Nettoyer le nom : enlever les descriptions trop longues
+            if nom and (len(nom) > 100 or "modèle" in nom.lower() or "polyvalent" in nom.lower()):
+                continue
+            
             texte = bloc.get_text()
             prix = extraire_prix(texte, config["prix_pattern"])
             
             if nom and prix and len(nom) > 3:
-                produits.append({'nom': nom[:100], 'prix': prix})
+                produits.append({'nom': nom[:80], 'prix': prix})
         
-        # Si pas assez de produits, chercher dans toute la page
+        # Méthode 2 : Si pas assez de produits, chercher dans toute la page
         if len(produits) < 2:
             texte_page = soup.get_text()
             prix = extraire_prix(texte_page, config["prix_pattern"])
             if prix:
                 for titre in soup.find_all(config["nom_selector"]):
                     nom = titre.get_text(strip=True)
-                    if nom and len(nom) > 5:
-                        produits.append({'nom': nom[:100], 'prix': prix})
+                    if nom and len(nom) > 5 and len(nom) < 100:
+                        if "modèle" not in nom.lower() and "polyvalent" not in nom.lower():
+                            produits.append({'nom': nom[:80], 'prix': prix})
         
         return produits
     except Exception as e:
@@ -210,7 +216,7 @@ def mettre_a_jour_prix_existant(sheet, row, nouveau_prix, timestamp):
         print(f"   ⚠️ Erreur mise à jour ligne {row}: {e}")
         return False
 
-# ==================== COLORATION ====================
+# ==================== COLORATION EN JAUNE ====================
 def colorer_fournisseurs_manuels(sheet):
     """Colore en jaune les fournisseurs à saisie manuelle"""
     try:
@@ -226,6 +232,7 @@ def colorer_fournisseurs_manuels(sheet):
                 break
         
         if not col_fournisseur:
+            print("   ❌ Colonne 'Fournisseur' non trouvée", flush=True)
             return
         
         yellow_format = {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.6}}
@@ -237,7 +244,7 @@ def colorer_fournisseurs_manuels(sheet):
                 sheet.format(f"{chr(64 + col_fournisseur)}{row}", yellow_format)
                 count += 1
         
-        print(f"   🟡 {count} fournisseurs colorés en jaune", flush=True)
+        print(f"   🟡 {count} fournisseurs colorés en jaune (mise à jour manuelle)", flush=True)
     except Exception as e:
         print(f"   ⚠️ Erreur coloration: {e}", flush=True)
 
@@ -266,6 +273,7 @@ def mettre_a_jour_prix():
             time.sleep(1)
         
         if tous_produits:
+            # Supprimer les doublons
             uniques = {}
             for p in tous_produits:
                 if p['nom'] not in uniques or p['prix'] < uniques[p['nom']]['prix']:
@@ -306,7 +314,7 @@ def mettre_a_jour_prix():
         else:
             print(f"   ⚠️ Aucun produit trouvé", flush=True)
     
-    # Ajouter les nouvelles lignes AVEC gestion des erreurs 429
+    # Ajouter les nouvelles lignes avec gestion des erreurs 429
     if nouvelles_lignes:
         print(f"\n📝 Ajout de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
         for i, ligne in enumerate(nouvelles_lignes):
@@ -317,11 +325,13 @@ def mettre_a_jour_prix():
         
         print(f"\n✅ {len(nouvelles_lignes)} nouveaux produits ajoutés", flush=True)
     
+    # Afficher le résumé
     print(f"\n📊 RÉSUMÉ DES CHANGEMENTS:", flush=True)
     print(f"   🆕 Nouveaux produits: {stats['nouveaux']}", flush=True)
     print(f"   📝 Prix modifiés: {stats['modifies']}", flush=True)
     print(f"   🔄 Prix identiques: {stats['identiques']}", flush=True)
     
+    # Colorer les fournisseurs manuels
     colorer_fournisseurs_manuels(sheet)
 
 # ==================== LANCER ====================
