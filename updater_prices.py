@@ -30,8 +30,9 @@ SITES_CONFIG = {
             "https://eurobox.fr/categorie-produit/containers/containers-de-stockage/"
         ],
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
-        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s*(?:€|&euro;)\s*(?:HT)?',
-        "type": "eurobox"  # Changé en type dédié
+        # Capture le bloc de chiffres (avec espaces/points) situé juste avant le symbole € et ignore les décimales
+        "prix_pattern": r'([\d\s\.\u202f\xa0]+)(?:,\d{2})?\s*(?:€|&euro;)',
+        "type": "eurobox"
     },
     "Cubner": {
         "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
@@ -83,24 +84,30 @@ def connecter_google_sheets():
 
 # ==================== FONCTIONS DE SCRAPING ====================
 def extraire_prix(texte, pattern):
-    # Nettoyage des espaces insécables HTML courants avant regex
+    # Nettoyage des espaces insécables HTML
     texte_nettoye = texte.replace('\xa0', ' ').replace('\u202f', ' ')
+    
     match = re.search(pattern, texte_nettoye, re.I)
     if not match:
         return None
+        
     prix_brut = match.group(1)
+    # Ne conserve strictement que les chiffres pour nettoyer "2 .850" -> "2850"
     prix_propre = re.sub(r'[^\d]', '', prix_brut)
     return int(prix_propre) if prix_propre else None
 
 def scraper_eurobox(soup, config):
-    """Scraper spécifique pour Eurobox capturant le texte générique sous le titre"""
+    """Scraper ciblé pour Eurobox - lit le texte générique sous le nom"""
     produits = []
-    # Sur Eurobox, les produits sont souvent dans des structures de listes ou d'articles d'archives
-    blocs = soup.find_all(['li', 'div', 'article'], class_=re.compile(r'product|post|item', re.I))
+    
+    # Cible les éléments de liste de produits WooCommerce d'Eurobox
+    blocs = soup.find_all('li', class_=re.compile(r'product', re.I))
+    if not blocs:
+        blocs = soup.find_all(['div', 'article'], class_=re.compile(r'product|post|item', re.I))
     
     for bloc in blocs:
-        # Recherche du titre
-        titre_elem = bloc.find(['h2', 'h3', 'h4', 'span'], class_=re.compile(r'title|loop', re.I))
+        # Récupération du titre du conteneur
+        titre_elem = bloc.find(['h2', 'h3', 'h4'], class_=re.compile(r'title|loop|product', re.I))
         if not titre_elem:
             titre_elem = bloc.find(['h2', 'h3'])
             
@@ -108,17 +115,16 @@ def scraper_eurobox(soup, config):
             continue
             
         nom = titre_elem.get_text(strip=True)
-        if len(nom) < 5 or "panier" in nom.lower():
+        if len(nom) < 5 or "panier" in nom.lower() or "sélectionner" in nom.lower():
             continue
             
-        # Extraction du texte générique complet du bloc (qui contient le prix en bas du nom)
-        texte_bloc = bloc.get_text(" ", strip=True)
+        # Extraction de tout le texte du bloc (incluant le format '2 .850,00€ HT')
+        texte_complet = bloc.get_text(" ", strip=True)
+        prix = extraire_prix(texte_complet, config["prix_pattern"])
         
-        # On extrait le prix basé sur le pattern configuré
-        prix = extraire_prix(texte_bloc, config["prix_pattern"])
-        
-        if prix and prix > 100:  # Évite les faux positifs (ex: ID ou dimensions)
+        if prix and prix > 100:
             produits.append({'nom': nom[:80], 'prix': prix})
+            print(f"   🎯 Eurobox décodé : {nom[:35]} -> {prix}€", flush=True)
             
     return produits
 
@@ -151,16 +157,12 @@ def scraper_acm(soup, config):
     
     if is_neuf:
         produits = [
-            ("20 pieds dry", 1950),
-            ("20 pieds HC", 2590),
-            ("20 pieds DD", 2640),
-            ("40 pieds dry", 3000),
-            ("40 pieds HC", 3190)
+            ("20 pieds dry", 1950), ("20 pieds HC", 2590), ("20 pieds DD", 2640),
+            ("40 pieds dry", 3000), ("40 pieds HC", 3190)
         ]
     else:
         produits = [
-            ("20 pieds occasion", 1160),
-            ("40 pieds dry occasion", 1090),
+            ("20 pieds occasion", 1160), ("40 pieds dry occasion", 1090),
             ("40 pieds High Cube occasion", 1300)
         ]
     return [{'nom': nom, 'prix': prix} for nom, prix in produits]
@@ -184,7 +186,6 @@ def scraper_standard(soup, config):
 
 def scraper_rubrique(url, config):
     try:
-        # Ajout de timeouts clairs et d'un User-Agent complet pour éviter le Read Timeout d'Eurobox
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
@@ -233,7 +234,7 @@ def get_prix_existants(data):
                 pass
     return prix_existants
 
-# ==================== COLORATION OPTIMISÉE (BATCH) ====================
+# ==================== COLORATION EN LOT (BATCH) ====================
 def colorer_fournisseurs_manuels_batch(sheet, data):
     try:
         if len(data) <= 1:
@@ -297,7 +298,7 @@ def mettre_a_jour_prix():
             print(f"   📄 {url}", flush=True)
             produits = scraper_rubrique(url, config)
             tous_produits.extend(produits)
-            time.sleep(1.5)  # Légère pause pour respecter les serveurs
+            time.sleep(1.5)
         
         if tous_produits:
             uniques = {}
@@ -331,10 +332,12 @@ def mettre_a_jour_prix():
         else:
             print(f"   ⚠️ Aucun produit trouvé pour {fournisseur}", flush=True)
     
+    # 1. Envoi groupé des mises à jour de prix
     if mises_a_jour_cellules:
         print(f"\n⚡ Exécution en lot de {stats['modifies']} modifications de prix...", flush=True)
         sheet.batch_update(mises_a_jour_cellules)
         
+    # 2. Insertion groupée des nouvelles lignes
     if nouvelles_lignes:
         print(f"\n📝 Insertion groupée de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
         sheet.append_rows(nouvelles_lignes, value_input_option='USER_ENTERED')
@@ -345,13 +348,14 @@ def mettre_a_jour_prix():
     print(f"   📝 Modifiés: {stats['modifies']}")
     print(f"   🔄 Identiques: {stats['identiques']}")
     
+    # 3. Application de la coloration en lot
     data_fraiche = sheet.get_all_values()
     colorer_fournisseurs_manuels_batch(sheet, data_fraiche)
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
     print("\n" + "="*50, flush=True)
-    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS (VERSION EUROBOX FIX)", flush=True)
+    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS (VERSION FINALE ODOO/SHEETS)", flush=True)
     print("="*50, flush=True)
     print(f"Heure de début: {datetime.now()}", flush=True)
     
