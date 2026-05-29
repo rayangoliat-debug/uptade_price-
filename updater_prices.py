@@ -30,9 +30,8 @@ SITES_CONFIG = {
             "https://eurobox.fr/categorie-produit/containers/containers-de-stockage/"
         ],
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
-        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s?[€&euro;]\s?HT',
-        "nom_selector": ["h2", "h3", ".product-title"],
-        "type": "standard"
+        "prix_pattern": r'(\d{1,3}(?:[\s\u202f\xa0]?\d{3})*)\s*(?:€|&euro;)\s*(?:HT)?',
+        "type": "eurobox"  # Changé en type dédié
     },
     "Cubner": {
         "urls": ["https://cubner.com/categorie-produit/conteneur-dry/"],
@@ -84,12 +83,44 @@ def connecter_google_sheets():
 
 # ==================== FONCTIONS DE SCRAPING ====================
 def extraire_prix(texte, pattern):
-    match = re.search(pattern, texte, re.I)
+    # Nettoyage des espaces insécables HTML courants avant regex
+    texte_nettoye = texte.replace('\xa0', ' ').replace('\u202f', ' ')
+    match = re.search(pattern, texte_nettoye, re.I)
     if not match:
         return None
     prix_brut = match.group(1)
     prix_propre = re.sub(r'[^\d]', '', prix_brut)
     return int(prix_propre) if prix_propre else None
+
+def scraper_eurobox(soup, config):
+    """Scraper spécifique pour Eurobox capturant le texte générique sous le titre"""
+    produits = []
+    # Sur Eurobox, les produits sont souvent dans des structures de listes ou d'articles d'archives
+    blocs = soup.find_all(['li', 'div', 'article'], class_=re.compile(r'product|post|item', re.I))
+    
+    for bloc in blocs:
+        # Recherche du titre
+        titre_elem = bloc.find(['h2', 'h3', 'h4', 'span'], class_=re.compile(r'title|loop', re.I))
+        if not titre_elem:
+            titre_elem = bloc.find(['h2', 'h3'])
+            
+        if not titre_elem:
+            continue
+            
+        nom = titre_elem.get_text(strip=True)
+        if len(nom) < 5 or "panier" in nom.lower():
+            continue
+            
+        # Extraction du texte générique complet du bloc (qui contient le prix en bas du nom)
+        texte_bloc = bloc.get_text(" ", strip=True)
+        
+        # On extrait le prix basé sur le pattern configuré
+        prix = extraire_prix(texte_bloc, config["prix_pattern"])
+        
+        if prix and prix > 100:  # Évite les faux positifs (ex: ID ou dimensions)
+            produits.append({'nom': nom[:80], 'prix': prix})
+            
+    return produits
 
 def scraper_cubner(soup, config):
     produits = [
@@ -153,12 +184,18 @@ def scraper_standard(soup, config):
 
 def scraper_rubrique(url, config):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        response = requests.get(url, headers=headers, timeout=20)
+        # Ajout de timeouts clairs et d'un User-Agent complet pour éviter le Read Timeout d'Eurobox
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
+        response = requests.get(url, headers=headers, timeout=25)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         scraping_type = config.get("type", "standard")
-        if scraping_type == "cubner":
+        if scraping_type == "eurobox":
+            return scraper_eurobox(soup, config)
+        elif scraping_type == "cubner":
             return scraper_cubner(soup, config)
         elif scraping_type == "cfc":
             return scraper_cfc(soup, config)
@@ -244,7 +281,6 @@ def mettre_a_jour_prix():
     client = connecter_google_sheets()
     sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
     
-    # On télécharge TOUTE la feuille une seule fois pour travailler en mémoire locale
     toute_la_feuille = sheet.get_all_values()
     prix_existants = get_prix_existants(toute_la_feuille)
     print(f"📊 {len(prix_existants)} prix existants chargés", flush=True)
@@ -261,7 +297,7 @@ def mettre_a_jour_prix():
             print(f"   📄 {url}", flush=True)
             produits = scraper_rubrique(url, config)
             tous_produits.extend(produits)
-            time.sleep(1)
+            time.sleep(1.5)  # Légère pause pour respecter les serveurs
         
         if tous_produits:
             uniques = {}
@@ -285,23 +321,20 @@ def mettre_a_jour_prix():
                         ancien_prix = prix_existants[key]["prix"]
                         if ancien_prix != prix_actuel:
                             row = prix_existants[key]["row"]
-                            # Stockage des mises à jour en mémoire pour les grouper après
                             mises_a_jour_cellules.append({'range': f'E{row}', 'values': [[prix_actuel]]})
                             mises_a_jour_cellules.append({'range': f'A{row}', 'values': [[timestamp]]})
                             stats["modifies"] += 1
                             print(f"   📝 Préparation MAJ {produit['nom'][:30]} : {ancien_prix}€ → {prix_actuel}€", flush=True)
                         else:
                             stats["identiques"] += 1
-            print(f"   ✅ {len(uniques)} produits traités", flush=True)
+            print(f"   ✅ {len(uniques)} produits traités pour {fournisseur}", flush=True)
         else:
-            print(f"   ⚠️ Aucun produit trouvé", flush=True)
+            print(f"   ⚠️ Aucun produit trouvé pour {fournisseur}", flush=True)
     
-    # 1. EXÉCUTION DES MISES À JOUR EXISTANTES (BATCH)
     if mises_a_jour_cellules:
         print(f"\n⚡ Exécution en lot de {stats['modifies']} modifications de prix...", flush=True)
         sheet.batch_update(mises_a_jour_cellules)
         
-    # 2. INSERTION DES NOUVEAUX PRODUITS (BATCH)
     if nouvelles_lignes:
         print(f"\n📝 Insertion groupée de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
         sheet.append_rows(nouvelles_lignes, value_input_option='USER_ENTERED')
@@ -312,14 +345,13 @@ def mettre_a_jour_prix():
     print(f"   📝 Modifiés: {stats['modifies']}")
     print(f"   🔄 Identiques: {stats['identiques']}")
     
-    # 3. COLORATION SÉCURISÉE EN LOT
     data_fraiche = sheet.get_all_values()
     colorer_fournisseurs_manuels_batch(sheet, data_fraiche)
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
     print("\n" + "="*50, flush=True)
-    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS (VERSION PROD BATCH)", flush=True)
+    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS (VERSION EUROBOX FIX)", flush=True)
     print("="*50, flush=True)
     print(f"Heure de début: {datetime.now()}", flush=True)
     
