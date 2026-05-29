@@ -2,8 +2,8 @@ name: Mise à jour des prix containers
 
 on:
   schedule:
-    # Tous les dimanches à 8h00
-    - cron: '0 10 * * 1,4'
+    # Tous les jours à 8h00 et 20h00
+    - cron: '0 8,20 * * *'
   # Permet une exécution manuelle depuis l'interface GitHub
   workflow_dispatch:
 
