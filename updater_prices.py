@@ -82,22 +82,6 @@ def connecter_google_sheets():
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
     return gspread.authorize(creds)
 
-# ==================== GESTION DES ERREURS ====================
-def ajouter_avec_retry(sheet, ligne, max_retries=3):
-    for i in range(max_retries):
-        try:
-            sheet.append_row(ligne, value_input_option='USER_ENTERED')
-            return True
-        except Exception as e:
-            if "429" in str(e) and i < max_retries - 1:
-                wait = (i + 1) * 5
-                print(f"   ⏳ Quota dépassé, pause de {wait}s...", flush=True)
-                time.sleep(wait)
-            else:
-                print(f"   ❌ Erreur: {e}", flush=True)
-                return False
-    return False
-
 # ==================== FONCTIONS DE SCRAPING ====================
 def extraire_prix(texte, pattern):
     match = re.search(pattern, texte, re.I)
@@ -108,7 +92,6 @@ def extraire_prix(texte, pattern):
     return int(prix_propre) if prix_propre else None
 
 def scraper_cubner(soup, config):
-    """Scraping spécifique pour Cubner (liste fixe)"""
     produits = [
         ("Container Maritime 20 Pieds – Premier Voyage", 1950),
         ("Conteneur 20 pieds Double Door premier voyage Le Havre", 3500),
@@ -121,7 +104,6 @@ def scraper_cubner(soup, config):
     return [{'nom': nom, 'prix': prix} for nom, prix in produits]
 
 def scraper_cfc(soup, config):
-    """Scraping spécifique pour CFC (liste fixe)"""
     produits = [
         ("Conteneur 20 Pieds DRY (Neuf)", 2280),
         ("Conteneur 20 Pieds DRY - Occasion (Occasion)", 1024),
@@ -133,7 +115,6 @@ def scraper_cfc(soup, config):
     return [{'nom': nom, 'prix': prix} for nom, prix in produits]
 
 def scraper_acm(soup, config):
-    """Scraping spécifique pour ACM Container (liste fixe)"""
     urls = config.get("urls", [])
     is_neuf = any("neuf" in url for url in urls)
     
@@ -154,7 +135,6 @@ def scraper_acm(soup, config):
     return [{'nom': nom, 'prix': prix} for nom, prix in produits]
 
 def scraper_standard(soup, config):
-    """Scraping standard pour les autres sites"""
     produits = []
     for bloc in soup.find_all(['div', 'article', 'li'], class_=re.compile(r'product|item|produit', re.I)):
         nom = None
@@ -173,87 +153,87 @@ def scraper_standard(soup, config):
 
 def scraper_rubrique(url, config):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         response = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.text, 'html.parser')
         
         scraping_type = config.get("type", "standard")
         if scraping_type == "cubner":
-            produits = scraper_cubner(soup, config)
+            return scraper_cubner(soup, config)
         elif scraping_type == "cfc":
-            produits = scraper_cfc(soup, config)
+            return scraper_cfc(soup, config)
         elif scraping_type == "acm":
-            produits = scraper_acm(soup, config)
+            return scraper_acm(soup, config)
         else:
-            produits = scraper_standard(soup, config)
-        return produits
+            return scraper_standard(soup, config)
     except Exception as e:
         print(f"   Erreur scraping {url}: {e}")
         return []
 
 # ==================== LECTURE DES PRIX EXISTANTS ====================
-def get_prix_existants(sheet):
+def get_prix_existants(data):
     prix_existants = {}
-    try:
-        data = sheet.get_all_values()
-        if len(data) <= 1:
-            return prix_existants
-        entetes = data[0]
-        indices = {}
-        for i, col in enumerate(entetes):
-            col_lower = col.lower()
-            if col_lower == "fournisseur":
-                indices["fournisseur"] = i
-            elif col_lower == "région":
-                indices["region"] = i
-            elif col_lower == "type container":
-                indices["type"] = i
-            elif col_lower == "prix ttc":
-                indices["prix"] = i
-        if len(indices) < 4:
-            return prix_existants
-        for row_idx, row in enumerate(data[1:], start=2):
-            if len(row) > max(indices.values()):
-                key = f"{row[indices['fournisseur']]}|{row[indices['region']]}|{row[indices['type']]}"
-                try:
-                    prix_existants[key] = {"prix": float(row[indices['prix']]), "row": row_idx}
-                except:
-                    pass
-    except Exception as e:
-        print(f"   ⚠️ Erreur lecture existants: {e}")
+    if len(data) <= 1:
+        return prix_existants
+    entetes = data[0]
+    indices = {}
+    for i, col in enumerate(entetes):
+        col_lower = col.lower()
+        if col_lower == "fournisseur": indices["fournisseur"] = i
+        elif col_lower == "région": indices["region"] = i
+        elif col_lower == "type container": indices["type"] = i
+        elif col_lower == "prix ttc": indices["prix"] = i
+        
+    if len(indices) < 4:
+        return prix_existants
+        
+    for row_idx, row in enumerate(data[1:], start=2):
+        if len(row) > max(indices.values()):
+            key = f"{row[indices['fournisseur']]}|{row[indices['region']]}|{row[indices['type']]}"
+            try:
+                prix_existants[key] = {"prix": float(row[indices['prix']]), "row": row_idx}
+            except:
+                pass
     return prix_existants
 
-def mettre_a_jour_prix_existant(sheet, row, nouveau_prix, timestamp):
+# ==================== COLORATION OPTIMISÉE (BATCH) ====================
+def colorer_fournisseurs_manuels_batch(sheet, data):
     try:
-        sheet.update_cell(row, 5, nouveau_prix)
-        sheet.update_cell(row, 1, timestamp)
-        return True
-    except Exception as e:
-        print(f"   ⚠️ Erreur mise à jour ligne {row}: {e}")
-        return False
-
-# ==================== COLORATION ====================
-def colorer_fournisseurs_manuels(sheet):
-    try:
-        data = sheet.get_all_values()
         if len(data) <= 1:
             return
         entetes = data[0]
         col_fournisseur = None
         for i, col in enumerate(entetes):
             if col.lower() == "fournisseur":
-                col_fournisseur = i + 1
+                col_fournisseur = i
                 break
-        if not col_fournisseur:
+        if col_fournisseur is None:
             return
+
         yellow_format = {"backgroundColor": {"red": 1.0, "green": 1.0, "blue": 0.6}}
-        count = 0
-        for row in range(2, len(data) + 1):
-            fournisseur = sheet.cell(row, col_fournisseur).value
-            if fournisseur in FOURNISSEURS_MANUELS:
-                sheet.format(f"{chr(64 + col_fournisseur)}{row}", yellow_format)
-                count += 1
-        print(f"   🟡 {count} fournisseurs colorés en jaune", flush=True)
+        requests_body = []
+
+        for row_idx, row in enumerate(data[1:], start=2):
+            if len(row) > col_fournisseur:
+                fournisseur = row[col_fournisseur]
+                if fournisseur in FOURNISSEURS_MANUELS:
+                    requests_body.append({
+                        "updateCells": {
+                            "range": {
+                                "sheetId": sheet._properties['sheetId'],
+                                "startRowIndex": row_idx - 1,
+                                "endRowIndex": row_idx,
+                                "startColumnIndex": col_fournisseur,
+                                "endColumnIndex": col_fournisseur + 1
+                            },
+                            "rows": [{"values": [{"userEnteredFormat": yellow_format}]}],
+                            "fields": "userEnteredFormat.backgroundColor"
+                        }
+                    })
+
+        if requests_body:
+            sheet.spreadsheet.batch_update({"requests": requests_body})
+            print(f"   🟡 {len(requests_body)} fournisseurs colorés en jaune via Batch API", flush=True)
     except Exception as e:
         print(f"   ⚠️ Erreur coloration: {e}", flush=True)
 
@@ -264,11 +244,14 @@ def mettre_a_jour_prix():
     client = connecter_google_sheets()
     sheet = client.open_by_key(SHEET_ID).worksheet(FEUILLE_HISTORIQUE)
     
-    prix_existants = get_prix_existants(sheet)
+    # On télécharge TOUTE la feuille une seule fois pour travailler en mémoire locale
+    toute_la_feuille = sheet.get_all_values()
+    prix_existants = get_prix_existants(toute_la_feuille)
     print(f"📊 {len(prix_existants)} prix existants chargés", flush=True)
     
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     nouvelles_lignes = []
+    mises_a_jour_cellules = []
     stats = {"nouveaux": 0, "modifies": 0, "identiques": 0}
     
     for fournisseur, config in SITES_CONFIG.items():
@@ -285,10 +268,12 @@ def mettre_a_jour_prix():
             for p in tous_produits:
                 if p['nom'] not in uniques or p['prix'] < uniques[p['nom']]['prix']:
                     uniques[p['nom']] = p
+                    
             for produit in uniques.values():
                 for region in config["regions"]:
                     key = f"{fournisseur}|{region}|{produit['nom']}"
                     prix_actuel = produit['prix']
+                    
                     if key not in prix_existants:
                         nouvelle_ligne = [
                             timestamp, fournisseur, region, produit['nom'],
@@ -300,40 +285,47 @@ def mettre_a_jour_prix():
                         ancien_prix = prix_existants[key]["prix"]
                         if ancien_prix != prix_actuel:
                             row = prix_existants[key]["row"]
-                            if mettre_a_jour_prix_existant(sheet, row, prix_actuel, timestamp):
-                                stats["modifies"] += 1
-                                print(f"   📝 MAJ {produit['nom'][:40]} : {ancien_prix}€ → {prix_actuel}€", flush=True)
+                            # Stockage des mises à jour en mémoire pour les grouper après
+                            mises_a_jour_cellules.append({'range': f'E{row}', 'values': [[prix_actuel]]})
+                            mises_a_jour_cellules.append({'range': f'A{row}', 'values': [[timestamp]]})
+                            stats["modifies"] += 1
+                            print(f"   📝 Préparation MAJ {produit['nom'][:30]} : {ancien_prix}€ → {prix_actuel}€", flush=True)
                         else:
                             stats["identiques"] += 1
-            print(f"   ✅ {len(uniques)} produits trouvés", flush=True)
+            print(f"   ✅ {len(uniques)} produits traités", flush=True)
         else:
             print(f"   ⚠️ Aucun produit trouvé", flush=True)
     
+    # 1. EXÉCUTION DES MISES À JOUR EXISTANTES (BATCH)
+    if mises_a_jour_cellules:
+        print(f"\n⚡ Exécution en lot de {stats['modifies']} modifications de prix...", flush=True)
+        sheet.batch_update(mises_a_jour_cellules)
+        
+    # 2. INSERTION DES NOUVEAUX PRODUITS (BATCH)
     if nouvelles_lignes:
-        print(f"\n📝 Ajout de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
-        for i, ligne in enumerate(nouvelles_lignes):
-            if ajouter_avec_retry(sheet, ligne):
-                if (i + 1) % 10 == 0:
-                    print(f"   {i + 1}/{len(nouvelles_lignes)} lignes ajoutées...", flush=True)
-            time.sleep(1)
-        print(f"\n✅ {len(nouvelles_lignes)} nouveaux produits ajoutés", flush=True)
+        print(f"\n📝 Insertion groupée de {len(nouvelles_lignes)} nouveaux produits...", flush=True)
+        sheet.append_rows(nouvelles_lignes, value_input_option='USER_ENTERED')
+        print(f"   ✅ Tous les nouveaux produits ont été ajoutés d'un coup !", flush=True)
     
     print(f"\n📊 RÉSUMÉ:", flush=True)
-    print(f"   🆕 Nouveaux: {stats['nouveaux']}", flush=True)
-    print(f"   📝 Modifiés: {stats['modifies']}", flush=True)
-    print(f"   🔄 Identiques: {stats['identiques']}", flush=True)
-    colorer_fournisseurs_manuels(sheet)
+    print(f"   🆕 Nouveaux: {stats['nouveaux']}")
+    print(f"   📝 Modifiés: {stats['modifies']}")
+    print(f"   🔄 Identiques: {stats['identiques']}")
+    
+    # 3. COLORATION SÉCURISÉE EN LOT
+    data_fraiche = sheet.get_all_values()
+    colorer_fournisseurs_manuels_batch(sheet, data_fraiche)
 
 # ==================== LANCER ====================
 if __name__ == "__main__":
     print("\n" + "="*50, flush=True)
-    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS", flush=True)
+    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS (VERSION PROD BATCH)", flush=True)
     print("="*50, flush=True)
     print(f"Heure de début: {datetime.now()}", flush=True)
     
     try:
         mettre_a_jour_prix()
-        print("\n✅ Script terminé", flush=True)
+        print("\n✅ Script de scraping terminé avec succès", flush=True)
     except Exception as e:
         print(f"\n❌ Erreur fatale: {e}", flush=True)
         import traceback
