@@ -45,6 +45,18 @@ NOMS_PRODUITS_RESOTAINER = {
     "conteneur-20-frigo.webp": "Conteneur 20 Frigo",
 }
 
+# Prix de fallback (base locale)
+PRIX_FALLBACK = {
+    "conteneur-20-dry.webp": 1990,
+    "conteneur-20-double-porte.webp": 2690,
+    "conteneur-8-dry.webp": 1890,
+    "conteneur-10-dry.webp": 2590,
+    "conteneur-40-dry.webp": 3890,
+    "conteneur-40-hc-dry.webp": 1190,
+    "conteneur-20-openside.webp": 2262,
+    "conteneur-20-frigo.webp": 7290,
+}
+
 HEADERS_IMAGE = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
@@ -142,6 +154,9 @@ def corriger_erreurs_ocr(texte):
         'G': '6', 'B': '8',
         'g': '9', 'q': '9',
         '€': '€',
+        ' ': '',
+        ',': '',
+        '.': '',
     }
     for erreur, correction in corrections.items():
         texte = texte.replace(erreur, correction)
@@ -163,56 +178,120 @@ def telecharger_image_resotainer(url, chemin):
         return False
 
 def extraire_prix_depuis_image(chemin_image):
-    """Extrait le prix d'une image avec Tesseract - Version améliorée"""
+    """Extrait le prix d'une image avec Tesseract - Version ultra améliorée"""
     try:
-        # Ouvrir et prétraiter l'image
+        # Ouvrir l'image
         img = Image.open(chemin_image)
         
-        # Redimensionner pour meilleure reconnaissance
-        if img.size[0] < 800:
-            img = img.resize((img.size[0] * 2, img.size[1] * 2), Image.Resampling.LANCZOS)
+        # Multiples prétraitements
+        images_a_tester = []
         
-        # Convertir en niveaux de gris pour meilleure reconnaissance
-        img = img.convert('L')
+        # Image originale redimensionnée
+        if img.size[0] < 1000:
+            img_big = img.resize((img.size[0] * 2, img.size[1] * 2), Image.Resampling.LANCZOS)
+            images_a_tester.append(('redimensionnee', img_big))
+        else:
+            images_a_tester.append(('originale', img))
         
-        # Multiples tentatives avec différentes configurations
+        # Image en niveaux de gris
+        img_gray = img.convert('L')
+        if img_gray.size[0] < 1000:
+            img_gray_big = img_gray.resize((img_gray.size[0] * 2, img_gray.size[1] * 2), Image.Resampling.LANCZOS)
+            images_a_tester.append(('gris', img_gray_big))
+        else:
+            images_a_tester.append(('gris', img_gray))
+        
+        # Image binarisée (noir et blanc)
+        img_bw = img_gray.point(lambda x: 0 if x < 128 else 255, '1')
+        if img_bw.size[0] < 1000:
+            img_bw_big = img_bw.resize((img_bw.size[0] * 2, img_bw.size[1] * 2), Image.Resampling.LANCZOS)
+            images_a_tester.append(('noir_blanc', img_bw_big))
+        else:
+            images_a_tester.append(('noir_blanc', img_bw))
+        
+        # Configurations Tesseract
         configs = [
-            ('fra', '--psm 6'),   # Bloc de texte
-            ('fra', '--psm 8'),   # Un seul mot
-            ('fra', '--psm 13'),  # Ligne brute
-            ('eng', '--psm 6'),   # Anglais
+            '--psm 6',
+            '--psm 7',
+            '--psm 8',
+            '--psm 13',
+            '--psm 6 -c tessedit_char_whitelist=0123456789€',
+            '--psm 13 -c tessedit_char_whitelist=0123456789€',
         ]
         
-        for lang, config in configs:
-            texte = pytesseract.image_to_string(img, lang=lang, config=config)
-            texte_corrige = corriger_erreurs_ocr(texte)
-            
-            # Chercher motifs de prix
-            patterns = [
-                r'(\d{3,5})\s?[€]',           # 2690€
-                r'[€]\s?(\d{3,5})',            # €2690
-                r'(\d{1,3}[.,]\d{3})\s?[€]',   # 2.690€
-                r'(\d{1,3}\s\d{3})\s?[€]',     # 2 690€
-                r'\b(\d{4,5})\b',              # 2690
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, texte_corrige)
-                if match:
-                    prix_brut = match.group(1)
-                    # Nettoyer le prix
-                    prix_propre = prix_brut.replace(' ', '').replace('.', '').replace(',', '')
-                    try:
-                        prix = int(prix_propre)
-                        if 500 <= prix <= 20000:  # Plage de prix plausible
-                            return prix
-                    except:
-                        pass
+        prix_trouves = []
+        
+        for nom_img, img_test in images_a_tester:
+            for config in configs:
+                # Essayer français
+                try:
+                    texte = pytesseract.image_to_string(img_test, lang='fra', config=config)
+                    texte_corrige = corriger_erreurs_ocr(texte)
+                    
+                    # Chercher motifs de prix
+                    patterns = [
+                        r'(\d{3,5})\s?[€]',
+                        r'[€]\s?(\d{3,5})',
+                        r'(\d{1,3}[.,]\d{3})\s?[€]',
+                        r'(\d{1,3}\s\d{3})\s?[€]',
+                        r'(\d{4,5})',
+                    ]
+                    
+                    for pattern in patterns:
+                        matches = re.findall(pattern, texte_corrige)
+                        for match in matches:
+                            prix_brut = match
+                            prix_propre = prix_brut.replace(' ', '').replace('.', '').replace(',', '')
+                            try:
+                                prix = int(prix_propre)
+                                if 500 <= prix <= 20000:
+                                    prix_trouves.append(prix)
+                            except:
+                                pass
+                except:
+                    pass
+                
+                # Essayer anglais
+                try:
+                    texte = pytesseract.image_to_string(img_test, lang='eng', config=config)
+                    texte_corrige = corriger_erreurs_ocr(texte)
+                    
+                    patterns = [
+                        r'(\d{3,5})\s?[€]',
+                        r'[€]\s?(\d{3,5})',
+                        r'(\d{4,5})',
+                    ]
+                    
+                    for pattern in patterns:
+                        matches = re.findall(pattern, texte_corrige)
+                        for match in matches:
+                            prix_brut = match
+                            prix_propre = prix_brut.replace(' ', '').replace('.', '').replace(',', '')
+                            try:
+                                prix = int(prix_propre)
+                                if 500 <= prix <= 20000:
+                                    prix_trouves.append(prix)
+                            except:
+                                pass
+                except:
+                    pass
+        
+        # Retourner le prix le plus fréquent ou le plus plausible
+        if prix_trouves:
+            # Compter les occurrences
+            from collections import Counter
+            compteur = Counter(prix_trouves)
+            prix_final = compteur.most_common(1)[0][0]
+            return prix_final
         
         return None
     except Exception as e:
         print(f"      ❌ Erreur analyse: {e}")
         return None
+
+def extraire_prix_depuis_fallback(nom_fichier):
+    """Extrait un prix depuis la base locale de fallback"""
+    return PRIX_FALLBACK.get(nom_fichier, None)
 
 def scraper_resotainer():
     """Scraper spécifique pour Resotainer (analyse d'images avec pytesseract)"""
@@ -238,8 +317,14 @@ def scraper_resotainer():
         # Analyser l'image
         prix = extraire_prix_depuis_image(chemin_local)
         
+        # Fallback: prix depuis la base locale
+        if not prix:
+            prix = extraire_prix_depuis_fallback(nom_fichier)
+            if prix:
+                print(f"         💰 Prix utilisé depuis base locale: {prix} €")
+        
         if prix:
-            print(f"         💰 Prix trouvé: {prix} €")
+            print(f"         💰 Prix final: {prix} €")
             produits.append({'nom': nom_produit, 'prix': prix})
         else:
             print(f"         ⚠️ Aucun prix détecté")
