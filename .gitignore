@@ -1,52 +1,15 @@
-# Fichiers Excel (contenant les données sensibles)
-*.xlsx
-*.xls
-*.xlsm
+# Credentials
+credentials.json
+*.json
 
-# Fichiers Python
+# Images
+images_resotainer/
+*.webp
+*.png
+*.jpg
+
+# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
-
-# Environnements virtuels
+.env
 venv/
-env/
-ENV/
-.venv/
-
-# Fichiers d'identifiants (clés API, mots de passe)
-*.json
-*.key
-*.pem
-config.py
-secrets.py
-
-# Fichiers de logs
-*.log
-logs/
-
-# Fichiers temporaires
-*.tmp
-*.temp
-*.bak
-*.swp
-*.swo
-
-# IDEs
-.vscode/
-.idea/
-*.sublime-*
-
-# Fichiers de données (optionnel)
-derniere_ligne.txt
-*.csv
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Notebooks Jupyter
-.ipynb_checkpoints/
-*.ipynb
