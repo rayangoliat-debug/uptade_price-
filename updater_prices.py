@@ -122,7 +122,7 @@ def connecter_google_sheets():
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
     return gspread.authorize(creds)
 
-# ==================== FONCTIONS RESOTAINER (avec pytesseract) ====================
+# ==================== FONCTIONS RESOTAINER (avec pytesseract amélioré) ====================
 def verifier_tesseract():
     """Vérifie que Tesseract est disponible"""
     try:
@@ -141,6 +141,7 @@ def corriger_erreurs_ocr(texte):
         'Z': '2', 'S': '5',
         'G': '6', 'B': '8',
         'g': '9', 'q': '9',
+        '€': '€',
     }
     for erreur, correction in corrections.items():
         texte = texte.replace(erreur, correction)
@@ -162,24 +163,52 @@ def telecharger_image_resotainer(url, chemin):
         return False
 
 def extraire_prix_depuis_image(chemin_image):
-    """Extrait le prix d'une image avec Tesseract"""
+    """Extrait le prix d'une image avec Tesseract - Version améliorée"""
     try:
+        # Ouvrir et prétraiter l'image
         img = Image.open(chemin_image)
-        # Configuration pour meilleure reconnaissance
-        config = '--psm 6 -c tessedit_char_whitelist=0123456789€'
-        texte = pytesseract.image_to_string(img, lang='fra', config=config)
-        texte_corrige = corriger_erreurs_ocr(texte)
         
-        # Chercher le prix
-        match = re.search(r'(\d{3,5})\s?[€]', texte_corrige)
-        if match:
-            return int(match.group(1))
+        # Redimensionner pour meilleure reconnaissance
+        if img.size[0] < 800:
+            img = img.resize((img.size[0] * 2, img.size[1] * 2), Image.Resampling.LANCZOS)
         
-        match = re.search(r'\b(\d{3,5})\b', texte_corrige)
-        if match:
-            prix = int(match.group(1))
-            if 500 <= prix <= 15000:
-                return prix
+        # Convertir en niveaux de gris pour meilleure reconnaissance
+        img = img.convert('L')
+        
+        # Multiples tentatives avec différentes configurations
+        configs = [
+            ('fra', '--psm 6'),   # Bloc de texte
+            ('fra', '--psm 8'),   # Un seul mot
+            ('fra', '--psm 13'),  # Ligne brute
+            ('eng', '--psm 6'),   # Anglais
+        ]
+        
+        for lang, config in configs:
+            texte = pytesseract.image_to_string(img, lang=lang, config=config)
+            texte_corrige = corriger_erreurs_ocr(texte)
+            
+            # Chercher motifs de prix
+            patterns = [
+                r'(\d{3,5})\s?[€]',           # 2690€
+                r'[€]\s?(\d{3,5})',            # €2690
+                r'(\d{1,3}[.,]\d{3})\s?[€]',   # 2.690€
+                r'(\d{1,3}\s\d{3})\s?[€]',     # 2 690€
+                r'\b(\d{4,5})\b',              # 2690
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, texte_corrige)
+                if match:
+                    prix_brut = match.group(1)
+                    # Nettoyer le prix
+                    prix_propre = prix_brut.replace(' ', '').replace('.', '').replace(',', '')
+                    try:
+                        prix = int(prix_propre)
+                        if 500 <= prix <= 20000:  # Plage de prix plausible
+                            return prix
+                    except:
+                        pass
+        
         return None
     except Exception as e:
         print(f"      ❌ Erreur analyse: {e}")
