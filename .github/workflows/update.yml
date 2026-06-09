@@ -25,7 +25,7 @@ jobs:
             libsm6 \
             libxext6 \
             libxrender-dev \
-            libgl1-mesa-glx
+            libgl1-mesa-dev
       
       - name: Cache pip packages
         uses: actions/cache@v3
@@ -41,6 +41,7 @@ jobs:
           pip install wheel
           pip install numpy==1.24.3
           pip install torch==2.0.0 --index-url https://download.pytorch.org/whl/cpu
+          pip install opencv-python-headless==4.8.1.78
           pip install -r requirements.txt
       
       - name: Setup credentials
