@@ -16,10 +16,11 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Install system dependencies for Tesseract
+      - name: Install Tesseract with French language
         run: |
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr tesseract-ocr-fra
+          tesseract --list-langs
       
       - name: Cache pip packages
         uses: actions/cache@v3
