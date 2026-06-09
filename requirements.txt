@@ -6,3 +6,4 @@ gspread==6.0.0
 google-auth==2.0.0
 pytesseract==0.3.10
 pillow==9.5.0
+numpy==1.24.3
