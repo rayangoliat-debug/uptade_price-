@@ -10,8 +10,6 @@ import time
 import sys
 import easyocr
 from PIL import Image
-from io import BytesIO
-import numpy as np
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -35,8 +33,8 @@ URLS_RESOTAINER = [
     "https://media.resotainer.fr/149935-medium_default/conteneur-20-frigo.webp",
 ]
 
-# Correspondance noms fichiers -> noms produits
-CORRESPONDANCE_NOMS_RESOTAINER = {
+# Noms des produits Resotainer
+NOMS_PRODUITS_RESOTAINER = {
     "conteneur-20-dry.webp": "Conteneur 20 Dry",
     "conteneur-20-double-porte.webp": "Conteneur 20 Double Porte",
     "conteneur-8-dry.webp": "Conteneur 8 Dry",
@@ -149,62 +147,42 @@ def corriger_erreurs_ocr(texte):
         texte = texte.replace(erreur, correction)
     return texte
 
-def telecharger_image_resotainer(url):
+def telecharger_image_resotainer(url, chemin):
     """Télécharge une image depuis Resotainer"""
     try:
         response = requests.get(url, headers=HEADERS_IMAGE, timeout=15)
         if response.status_code == 200:
-            return response.content
+            with open(chemin, 'wb') as f:
+                f.write(response.content)
+            return True
         else:
             print(f"      ❌ Échec téléchargement (code {response.status_code})")
-            return None
+            return False
     except Exception as e:
         print(f"      ❌ Erreur téléchargement: {e}")
-        return None
+        return False
 
-def extraire_prix_depuis_image(contenu_image, reader):
-    """Extrait le prix d'une image avec EasyOCR - Version corrigée avec numpy array"""
+def extraire_prix_depuis_image(chemin_image, reader):
+    """Extrait le prix d'une image"""
     try:
-        # Convertir les bytes en array numpy pour EasyOCR
-        img = Image.open(BytesIO(contenu_image))
-        
-        # Convertir PIL en array numpy (format attendu par EasyOCR)
-        img_np = np.array(img)
-        
-        # Redimensionner pour meilleure reconnaissance
-        if img_np.shape[1] < 800:  # width est l'index 1
-            facteur = 2
-            nouvelle_largeur = img_np.shape[1] * facteur
-            nouvelle_hauteur = img_np.shape[0] * facteur
-            img = img.resize((nouvelle_largeur, nouvelle_hauteur), Image.Resampling.LANCZOS)
-            img_np = np.array(img)
-        
-        # Lire le texte avec EasyOCR (directement sur l'array numpy)
-        resultats_ocr = reader.readtext(img_np)
+        resultats_ocr = reader.readtext(chemin_image)
         textes_detectes = [res[1] for res in resultats_ocr]
-        
-        # Correction des erreurs OCR
         textes_corriges = [corriger_erreurs_ocr(t) for t in textes_detectes]
         
-        # Rechercher le prix
         for texte in textes_corriges:
-            # Motif : 2690€ ou 2690 €
             match = re.search(r'(\d{3,5})\s?[€]', texte)
             if match:
                 return int(match.group(1))
         
-        # Si non trouvé, chercher des nombres de 3 à 5 chiffres
         for texte in textes_corriges:
             match = re.search(r'\b(\d{3,5})\b', texte)
             if match:
                 prix = int(match.group(1))
-                if 500 <= prix <= 15000:  # Prix plausible
+                if 500 <= prix <= 15000:
                     return prix
-        
         return None
-        
     except Exception as e:
-        print(f"      ❌ Erreur analyse image: {e}")
+        print(f"      ❌ Erreur analyse: {e}")
         return None
 
 def scraper_resotainer(reader):
@@ -215,32 +193,21 @@ def scraper_resotainer(reader):
     
     for url in URLS_RESOTAINER:
         nom_fichier = url.split('/')[-1]
-        nom_produit = CORRESPONDANCE_NOMS_RESOTAINER.get(nom_fichier, nom_fichier.replace('.webp', ''))
+        nom_produit = NOMS_PRODUITS_RESOTAINER.get(nom_fichier, nom_fichier.replace('.webp', ''))
+        chemin_local = os.path.join(DOSSIER_IMAGES, nom_fichier)
         
         print(f"      📄 {nom_produit}")
         
-        # Vérifier si l'image existe déjà localement
-        chemin_local = os.path.join(DOSSIER_IMAGES, nom_fichier)
-        
-        if os.path.exists(chemin_local):
-            # Lire l'image locale
-            with open(chemin_local, 'rb') as f:
-                contenu_image = f.read()
-            print(f"         📁 Image locale trouvée")
-        else:
-            # Télécharger l'image
-            contenu_image = telecharger_image_resotainer(url)
-            if contenu_image:
-                # Sauvegarder l'image
-                with open(chemin_local, 'wb') as f:
-                    f.write(contenu_image)
-                print(f"         ✅ Image téléchargée et sauvegardée")
-            else:
-                print(f"         ❌ Impossible de télécharger l'image")
+        # Télécharger si nécessaire
+        if not os.path.exists(chemin_local):
+            print(f"         📥 Téléchargement...")
+            if not telecharger_image_resotainer(url, chemin_local):
                 continue
+        else:
+            print(f"         📁 Image locale trouvée")
         
-        # Extraire le prix
-        prix = extraire_prix_depuis_image(contenu_image, reader)
+        # Analyser l'image
+        prix = extraire_prix_depuis_image(chemin_local, reader)
         
         if prix:
             print(f"         💰 Prix trouvé: {prix} €")
