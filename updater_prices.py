@@ -8,12 +8,49 @@ import os
 import json
 import time
 import sys
+import easyocr
+from PIL import Image
+from io import BytesIO
 
 sys.stdout.reconfigure(line_buffering=True)
 
 # ==================== CONFIGURATION ====================
 SHEET_ID = "1Y-8ejP0r8vLrSIzfUJJ8qeBBmNSeuCGIcojK8-z4G74"
 FEUILLE_HISTORIQUE = "HistoriquePrix"
+
+# Dossier pour les images Resotainer
+DOSSIER_IMAGES = "images_resotainer"
+os.makedirs(DOSSIER_IMAGES, exist_ok=True)
+
+# URLs des images Resotainer
+URLS_RESOTAINER = [
+    "https://media.resotainer.fr/150041-home_default/conteneur-20-dry.webp",
+    "https://media.resotainer.fr/130373-home_default/conteneur-20-double-porte.webp",
+    "https://media.resotainer.fr/150045-home_default/conteneur-8-dry.webp",
+    "https://media.resotainer.fr/150044-home_default/conteneur-10-dry.webp",
+    "https://media.resotainer.fr/149936-home_default/conteneur-40-dry.webp",
+    "https://media.resotainer.fr/150114-medium_default/conteneur-40-hc-dry.webp",
+    "https://media.resotainer.fr/150046-medium_default/conteneur-20-openside.webp",
+    "https://media.resotainer.fr/149935-medium_default/conteneur-20-frigo.webp",
+]
+
+# Correspondance noms fichiers -> noms produits
+CORRESPONDANCE_NOMS_RESOTAINER = {
+    "conteneur-20-dry.webp": "Conteneur 20 Dry",
+    "conteneur-20-double-porte.webp": "Conteneur 20 Double Porte",
+    "conteneur-8-dry.webp": "Conteneur 8 Dry",
+    "conteneur-10-dry.webp": "Conteneur 10 Dry",
+    "conteneur-40-dry.webp": "Conteneur 40 Dry",
+    "conteneur-40-hc-dry.webp": "Conteneur 40 HC Dry",
+    "conteneur-20-openside.webp": "Conteneur 20 Openside",
+    "conteneur-20-frigo.webp": "Conteneur 20 Frigo",
+}
+
+HEADERS_IMAGE = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+    "Referer": "https://www.resotainer.fr/",
+}
 
 SITES_CONFIG = {
     "Box'Innov": {
@@ -30,7 +67,6 @@ SITES_CONFIG = {
             "https://eurobox.fr/categorie-produit/containers/containers-de-stockage/"
         ],
         "regions": ["Marseille (port)", "Nantes (port)", "Lyon (port)"],
-        # Capture le bloc de chiffres (avec espaces/points) situé juste avant le symbole € et ignore les décimales
         "prix_pattern": r'([\d\s\.\u202f\xa0]+)(?:,\d{2})?\s*(?:€|&euro;)',
         "type": "eurobox"
     },
@@ -61,6 +97,11 @@ SITES_CONFIG = {
         ],
         "regions": ["Marseille"],
         "type": "acm"
+    },
+    "Resotainer": {
+        "urls": [],
+        "regions": ["France (national)"],
+        "type": "resotainer"
     }
 }
 
@@ -81,6 +122,126 @@ def connecter_google_sheets():
     else:
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
     return gspread.authorize(creds)
+
+# ==================== FONCTIONS RESOTAINER ====================
+def initialiser_easyocr():
+    """Initialise EasyOCR pour l'analyse des images"""
+    print("   🔧 Initialisation d'EasyOCR pour Resotainer...")
+    try:
+        reader = easyocr.Reader(['fr', 'en'], gpu=False, verbose=False)
+        print("   ✅ EasyOCR prêt")
+        return reader
+    except Exception as e:
+        print(f"   ❌ Erreur EasyOCR: {e}")
+        return None
+
+def corriger_erreurs_ocr(texte):
+    """Corrige les erreurs fréquentes de l'OCR"""
+    corrections = {
+        'o': '0', 'O': '0',
+        'l': '1', 'I': '1',
+        'Z': '2', 'S': '5',
+        'G': '6', 'B': '8',
+        'g': '9', 'q': '9',
+    }
+    for erreur, correction in corrections.items():
+        texte = texte.replace(erreur, correction)
+    return texte
+
+def telecharger_image_resotainer(url):
+    """Télécharge une image depuis Resotainer"""
+    try:
+        response = requests.get(url, headers=HEADERS_IMAGE, timeout=15)
+        if response.status_code == 200:
+            return response.content
+        else:
+            print(f"      ❌ Échec téléchargement (code {response.status_code})")
+            return None
+    except Exception as e:
+        print(f"      ❌ Erreur téléchargement: {e}")
+        return None
+
+def extraire_prix_depuis_image(contenu_image, reader):
+    """Extrait le prix d'une image avec EasyOCR"""
+    try:
+        img = Image.open(BytesIO(contenu_image))
+        
+        # Redimensionner pour meilleure reconnaissance
+        if img.size[0] < 800:
+            facteur = 2
+            nouvelle_taille = (img.size[0] * facteur, img.size[1] * facteur)
+            img = img.resize(nouvelle_taille, Image.Resampling.LANCZOS)
+        
+        # Lire le texte avec EasyOCR
+        resultats_ocr = reader.readtext(BytesIO(contenu_image))
+        textes_detectes = [res[1] for res in resultats_ocr]
+        
+        # Correction des erreurs OCR
+        textes_corriges = [corriger_erreurs_ocr(t) for t in textes_detectes]
+        
+        # Rechercher le prix
+        for texte in textes_corriges:
+            # Motif : 2690€ ou 2690 €
+            match = re.search(r'(\d{3,5})\s?[€]', texte)
+            if match:
+                return int(match.group(1))
+        
+        # Si non trouvé, chercher des nombres de 3 à 5 chiffres
+        for texte in textes_corriges:
+            match = re.search(r'\b(\d{3,5})\b', texte)
+            if match:
+                prix = int(match.group(1))
+                if 500 <= prix <= 15000:  # Prix plausible
+                    return prix
+        
+        return None
+        
+    except Exception as e:
+        print(f"      ❌ Erreur analyse image: {e}")
+        return None
+
+def scraper_resotainer(reader):
+    """Scraper spécifique pour Resotainer (analyse d'images)"""
+    produits = []
+    
+    print(f"   📸 Analyse des images Resotainer...")
+    
+    for url in URLS_RESOTAINER:
+        nom_fichier = url.split('/')[-1]
+        nom_produit = CORRESPONDANCE_NOMS_RESOTAINER.get(nom_fichier, nom_fichier.replace('.webp', ''))
+        
+        print(f"      📄 {nom_produit}")
+        
+        # Vérifier si l'image existe déjà localement
+        chemin_local = os.path.join(DOSSIER_IMAGES, nom_fichier)
+        
+        if os.path.exists(chemin_local):
+            # Lire l'image locale
+            with open(chemin_local, 'rb') as f:
+                contenu_image = f.read()
+            print(f"         📁 Image locale trouvée")
+        else:
+            # Télécharger l'image
+            contenu_image = telecharger_image_resotainer(url)
+            if contenu_image:
+                # Sauvegarder l'image
+                with open(chemin_local, 'wb') as f:
+                    f.write(contenu_image)
+                print(f"         ✅ Image téléchargée et sauvegardée")
+            else:
+                print(f"         ❌ Impossible de télécharger l'image")
+                continue
+        
+        # Extraire le prix
+        prix = extraire_prix_depuis_image(contenu_image, reader)
+        
+        if prix:
+            print(f"         💰 Prix trouvé: {prix} €")
+            produits.append({'nom': nom_produit, 'prix': prix})
+        else:
+            print(f"         ⚠️ Aucun prix détecté")
+    
+    return produits
 
 # ==================== FONCTIONS DE SCRAPING ====================
 def extraire_prix(texte, pattern):
@@ -286,6 +447,9 @@ def mettre_a_jour_prix():
     prix_existants = get_prix_existants(toute_la_feuille)
     print(f"📊 {len(prix_existants)} prix existants chargés", flush=True)
     
+    # Initialisation EasyOCR pour Resotainer
+    reader_ocr = initialiser_easyocr()
+    
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     nouvelles_lignes = []
     mises_a_jour_cellules = []
@@ -293,12 +457,21 @@ def mettre_a_jour_prix():
     
     for fournisseur, config in SITES_CONFIG.items():
         print(f"\n🔍 Scraping {fournisseur}...", flush=True)
-        tous_produits = []
-        for url in config["urls"]:
-            print(f"   📄 {url}", flush=True)
-            produits = scraper_rubrique(url, config)
-            tous_produits.extend(produits)
-            time.sleep(1.5)
+        
+        # Cas spécial pour Resotainer (analyse d'images)
+        if fournisseur == "Resotainer":
+            if reader_ocr:
+                tous_produits = scraper_resotainer(reader_ocr)
+            else:
+                print(f"   ❌ EasyOCR non disponible, impossible de scraper Resotainer")
+                tous_produits = []
+        else:
+            tous_produits = []
+            for url in config["urls"]:
+                print(f"   📄 {url}", flush=True)
+                produits = scraper_rubrique(url, config)
+                tous_produits.extend(produits)
+                time.sleep(1.5)
         
         if tous_produits:
             uniques = {}
@@ -325,7 +498,7 @@ def mettre_a_jour_prix():
                             mises_a_jour_cellules.append({'range': f'E{row}', 'values': [[prix_actuel]]})
                             mises_a_jour_cellules.append({'range': f'A{row}', 'values': [[timestamp]]})
                             stats["modifies"] += 1
-                            print(f"   📝 Préparation MAJ {produit['nom'][:30]} : {ancien_prix}€ → {prix_actuel}€", flush=True)
+                            print(f"   📝 MAJ {produit['nom'][:30]} : {ancien_prix}€ → {prix_actuel}€", flush=True)
                         else:
                             stats["identiques"] += 1
             print(f"   ✅ {len(uniques)} produits traités pour {fournisseur}", flush=True)
@@ -355,7 +528,7 @@ def mettre_a_jour_prix():
 # ==================== LANCER ====================
 if __name__ == "__main__":
     print("\n" + "="*50, flush=True)
-    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS (VERSION FINALE ODOO/SHEETS)", flush=True)
+    print("📦 SCRAPING UNIFIÉ DES PRIX CONTAINERS (AVEC RESOTAINER)", flush=True)
     print("="*50, flush=True)
     print(f"Heure de début: {datetime.now()}", flush=True)
     
