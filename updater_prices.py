@@ -8,7 +8,7 @@ import os
 import json
 import time
 import sys
-import easyocr
+import pytesseract
 from PIL import Image
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -122,17 +122,16 @@ def connecter_google_sheets():
         creds = Credentials.from_service_account_file("credentials.json", scopes=scope)
     return gspread.authorize(creds)
 
-# ==================== FONCTIONS RESOTAINER ====================
-def initialiser_easyocr():
-    """Initialise EasyOCR pour l'analyse des images"""
-    print("   🔧 Initialisation d'EasyOCR pour Resotainer...")
+# ==================== FONCTIONS RESOTAINER (avec pytesseract) ====================
+def verifier_tesseract():
+    """Vérifie que Tesseract est disponible"""
     try:
-        reader = easyocr.Reader(['fr', 'en'], gpu=False, verbose=False)
-        print("   ✅ EasyOCR prêt")
-        return reader
+        version = pytesseract.get_tesseract_version()
+        print(f"   ✅ Tesseract disponible (version {version})")
+        return True
     except Exception as e:
-        print(f"   ❌ Erreur EasyOCR: {e}")
-        return None
+        print(f"   ❌ Tesseract non trouvé: {e}")
+        return False
 
 def corriger_erreurs_ocr(texte):
     """Corrige les erreurs fréquentes de l'OCR"""
@@ -162,31 +161,32 @@ def telecharger_image_resotainer(url, chemin):
         print(f"      ❌ Erreur téléchargement: {e}")
         return False
 
-def extraire_prix_depuis_image(chemin_image, reader):
-    """Extrait le prix d'une image"""
+def extraire_prix_depuis_image(chemin_image):
+    """Extrait le prix d'une image avec Tesseract"""
     try:
-        resultats_ocr = reader.readtext(chemin_image)
-        textes_detectes = [res[1] for res in resultats_ocr]
-        textes_corriges = [corriger_erreurs_ocr(t) for t in textes_detectes]
+        img = Image.open(chemin_image)
+        # Configuration pour meilleure reconnaissance
+        config = '--psm 6 -c tessedit_char_whitelist=0123456789€'
+        texte = pytesseract.image_to_string(img, lang='fra', config=config)
+        texte_corrige = corriger_erreurs_ocr(texte)
         
-        for texte in textes_corriges:
-            match = re.search(r'(\d{3,5})\s?[€]', texte)
-            if match:
-                return int(match.group(1))
+        # Chercher le prix
+        match = re.search(r'(\d{3,5})\s?[€]', texte_corrige)
+        if match:
+            return int(match.group(1))
         
-        for texte in textes_corriges:
-            match = re.search(r'\b(\d{3,5})\b', texte)
-            if match:
-                prix = int(match.group(1))
-                if 500 <= prix <= 15000:
-                    return prix
+        match = re.search(r'\b(\d{3,5})\b', texte_corrige)
+        if match:
+            prix = int(match.group(1))
+            if 500 <= prix <= 15000:
+                return prix
         return None
     except Exception as e:
         print(f"      ❌ Erreur analyse: {e}")
         return None
 
-def scraper_resotainer(reader):
-    """Scraper spécifique pour Resotainer (analyse d'images)"""
+def scraper_resotainer():
+    """Scraper spécifique pour Resotainer (analyse d'images avec pytesseract)"""
     produits = []
     
     print(f"   📸 Analyse des images Resotainer...")
@@ -207,7 +207,7 @@ def scraper_resotainer(reader):
             print(f"         📁 Image locale trouvée")
         
         # Analyser l'image
-        prix = extraire_prix_depuis_image(chemin_local, reader)
+        prix = extraire_prix_depuis_image(chemin_local)
         
         if prix:
             print(f"         💰 Prix trouvé: {prix} €")
@@ -421,8 +421,8 @@ def mettre_a_jour_prix():
     prix_existants = get_prix_existants(toute_la_feuille)
     print(f"📊 {len(prix_existants)} prix existants chargés", flush=True)
     
-    # Initialisation EasyOCR pour Resotainer
-    reader_ocr = initialiser_easyocr()
+    # Vérification Tesseract pour Resotainer
+    tesseract_ok = verifier_tesseract()
     
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     nouvelles_lignes = []
@@ -432,12 +432,12 @@ def mettre_a_jour_prix():
     for fournisseur, config in SITES_CONFIG.items():
         print(f"\n🔍 Scraping {fournisseur}...", flush=True)
         
-        # Cas spécial pour Resotainer (analyse d'images)
+        # Cas spécial pour Resotainer (analyse d'images avec Tesseract)
         if fournisseur == "Resotainer":
-            if reader_ocr:
-                tous_produits = scraper_resotainer(reader_ocr)
+            if tesseract_ok:
+                tous_produits = scraper_resotainer()
             else:
-                print(f"   ❌ EasyOCR non disponible, impossible de scraper Resotainer")
+                print(f"   ❌ Tesseract non disponible, impossible de scraper Resotainer")
                 tous_produits = []
         else:
             tous_produits = []
