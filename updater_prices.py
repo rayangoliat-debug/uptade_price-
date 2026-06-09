@@ -11,6 +11,7 @@ import sys
 import easyocr
 from PIL import Image
 from io import BytesIO
+import numpy as np
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -162,18 +163,24 @@ def telecharger_image_resotainer(url):
         return None
 
 def extraire_prix_depuis_image(contenu_image, reader):
-    """Extrait le prix d'une image avec EasyOCR"""
+    """Extrait le prix d'une image avec EasyOCR - Version corrigée avec numpy array"""
     try:
+        # Convertir les bytes en array numpy pour EasyOCR
         img = Image.open(BytesIO(contenu_image))
         
-        # Redimensionner pour meilleure reconnaissance
-        if img.size[0] < 800:
-            facteur = 2
-            nouvelle_taille = (img.size[0] * facteur, img.size[1] * facteur)
-            img = img.resize(nouvelle_taille, Image.Resampling.LANCZOS)
+        # Convertir PIL en array numpy (format attendu par EasyOCR)
+        img_np = np.array(img)
         
-        # Lire le texte avec EasyOCR
-        resultats_ocr = reader.readtext(BytesIO(contenu_image))
+        # Redimensionner pour meilleure reconnaissance
+        if img_np.shape[1] < 800:  # width est l'index 1
+            facteur = 2
+            nouvelle_largeur = img_np.shape[1] * facteur
+            nouvelle_hauteur = img_np.shape[0] * facteur
+            img = img.resize((nouvelle_largeur, nouvelle_hauteur), Image.Resampling.LANCZOS)
+            img_np = np.array(img)
+        
+        # Lire le texte avec EasyOCR (directement sur l'array numpy)
+        resultats_ocr = reader.readtext(img_np)
         textes_detectes = [res[1] for res in resultats_ocr]
         
         # Correction des erreurs OCR
